@@ -267,6 +267,111 @@ export async function fetchFilterOptions(sessionId: string): Promise<FilterOptio
   return data.options;
 }
 
+// ---------------------------------------------------------------------------
+// Chat
+// ---------------------------------------------------------------------------
+
+export interface ChatResponse {
+  reply: string;
+  chart: PlotlyFigure | null;
+  chart_config: Record<string, string> | null;
+  data_table: Record<string, unknown>[] | null;
+  suggested_questions: string[];
+}
+
+export async function sendChatMessage(
+  sessionId: string,
+  message: string
+): Promise<ChatResponse> {
+  const { data } = await http.post<ChatResponse>("/chat/message", {
+    session_id: sessionId,
+    message,
+  });
+  return data;
+}
+
+export async function getChatHistory(
+  sessionId: string
+): Promise<{ history: { role: string; content: string }[] }> {
+  const { data } = await http.get(`/chat/history?session_id=${sessionId}`);
+  return data;
+}
+
+export async function clearChatHistory(sessionId: string): Promise<void> {
+  await http.post(`/chat/clear?session_id=${sessionId}`);
+}
+
+// ---------------------------------------------------------------------------
+// Agent
+// ---------------------------------------------------------------------------
+
+export type AgentEvent =
+  | { type: "thinking"; text: string }
+  | { type: "tool_call"; tool: string; args: Record<string, unknown> }
+  | { type: "tool_result"; tool: string; summary: string }
+  | { type: "chart"; figure: PlotlyFigure; title: string }
+  | { type: "finding"; headline: string; detail: string; stat?: string }
+  | { type: "report"; markdown: string }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+/**
+ * Stream an agentic analysis via SSE.
+ * Calls onEvent for each parsed event, returns a cleanup function.
+ */
+export function runAgentAnalysis(
+  sessionId: string,
+  problem: string,
+  onEvent: (event: AgentEvent) => void,
+  onError?: (err: Error) => void
+): () => void {
+  let active = true;
+
+  (async () => {
+    try {
+      const response = await fetch("/api/agent/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, problem }),
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error(`Agent request failed: ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (active) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const raw = line.slice(6).trim();
+            if (!raw) continue;
+            try {
+              const event = JSON.parse(raw) as AgentEvent;
+              if (active) onEvent(event);
+            } catch {
+              // malformed event — skip
+            }
+          }
+        }
+      }
+    } catch (err) {
+      if (active && onError) onError(err instanceof Error ? err : new Error(String(err)));
+    }
+  })();
+
+  return () => { active = false; };
+}
+
 export async function applyFilters(
   sessionId: string,
   filters: {

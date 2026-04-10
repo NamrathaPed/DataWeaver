@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from routers import upload, analyze, charts, insights, filters
+from routers import upload, analyze, charts, insights, filters, chat, agent
 
 load_dotenv()
 
@@ -80,6 +80,8 @@ app.include_router(analyze.router,  prefix="/api/analyze",  tags=["Analyze"])
 app.include_router(charts.router,   prefix="/api/charts",   tags=["Charts"])
 app.include_router(insights.router, prefix="/api/insights", tags=["Insights"])
 app.include_router(filters.router,  prefix="/api/filters",  tags=["Filters"])
+app.include_router(chat.router,     prefix="/api/chat",     tags=["Chat"])
+app.include_router(agent.router,    prefix="/api/agent",    tags=["Agent"])
 
 
 # ---------------------------------------------------------------------------

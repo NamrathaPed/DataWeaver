@@ -32,7 +32,7 @@ export default function UploadPage() {
 
       setStatus("analyzing");
       await analyzeDataset(uploadRes.session_id);
-      navigate(`/dashboard/${uploadRes.session_id}`);
+      navigate(`/agent/${uploadRes.session_id}`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Upload failed.";
       setError(msg);

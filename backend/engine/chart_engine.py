@@ -15,12 +15,22 @@ Chart selection logic:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+
+def _fig_to_dict(fig) -> dict:
+    """Serialise a Plotly figure to a plain JSON-safe dict.
+
+    fig.to_dict() in Plotly 6.x returns objects with non-serialisable types.
+    Going through JSON ensures all values are native Python types.
+    """
+    return json.loads(fig.to_json())
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +194,7 @@ def _histogram_with_box(df: pd.DataFrame, col: str) -> dict:
     fig.update_xaxes(title_text=col, row=2, col=1)
     fig.update_yaxes(title_text="Count", row=1, col=1)
 
-    return fig.to_dict()
+    return _fig_to_dict(fig)
 
 
 def _bar_chart(df: pd.DataFrame, col: str) -> dict:
@@ -212,7 +222,7 @@ def _bar_chart(df: pd.DataFrame, col: str) -> dict:
         yaxis=dict(autorange="reversed"),
     )
 
-    return fig.to_dict()
+    return _fig_to_dict(fig)
 
 
 def _line_chart(df: pd.DataFrame, col: str) -> dict:
@@ -258,7 +268,7 @@ def _line_chart(df: pd.DataFrame, col: str) -> dict:
         yaxis_title="Record Count",
     )
 
-    return fig.to_dict()
+    return _fig_to_dict(fig)
 
 
 def _scatter_plot(
@@ -291,7 +301,7 @@ def _scatter_plot(
         margin=dict(t=50, b=40, l=60, r=20),
     )
 
-    return fig.to_dict()
+    return _fig_to_dict(fig)
 
 
 def _box_plot(
@@ -325,7 +335,7 @@ def _box_plot(
         showlegend=False,
     )
 
-    return fig.to_dict()
+    return _fig_to_dict(fig)
 
 
 def _numeric_vs_categorical_boxes(
@@ -381,4 +391,4 @@ def _correlation_heatmap(matrix: dict[str, dict]) -> dict:
         xaxis=dict(tickangle=-45),
     )
 
-    return fig.to_dict()
+    return _fig_to_dict(fig)

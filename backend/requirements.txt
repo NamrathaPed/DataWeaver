@@ -13,7 +13,7 @@ uvicorn[standard]>=0.27.0
 python-multipart>=0.0.9  # File uploads
 
 # AI / LLM
-openai>=1.12.0
+google-generativeai>=0.7.0
 
 # Supabase
 supabase>=2.3.0
