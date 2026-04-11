@@ -14,8 +14,8 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
-import google.generativeai as genai
 from dotenv import load_dotenv
+from openai import OpenAI
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -135,7 +135,7 @@ def chat_message(req: ChatMessage):
 
     history = _chat_history.setdefault(req.session_id, [])
 
-    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("NVIDIA_API_KEY")
     if not api_key:
         reply, chart_config = _rule_based_response(req.message, eda)
         history.append({"role": "user", "content": req.message})
@@ -148,21 +148,21 @@ def chat_message(req: ChatMessage):
             suggested_questions=_suggest_questions(eda),
         )
 
-    genai.configure(api_key=api_key)
-    model_name = os.getenv("LLM_MODEL", "gemini-2.0-flash")
+    model_name = os.getenv("LLM_MODEL", "meta/llama-3.1-70b-instruct")
     system_prompt = _build_system_prompt(eda, filename)
+    client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=api_key)
 
-    # Convert stored history to Gemini format (last 10 turns)
-    gemini_history = _to_gemini_history(history[-10:])
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history[-10:])
+    messages.append({"role": "user", "content": req.message})
 
-    model = genai.GenerativeModel(
-        model_name=model_name,
-        system_instruction=system_prompt,
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=messages,
+        temperature=0.3,
+        max_tokens=1024,
     )
-    chat = model.start_chat(history=gemini_history)
-
-    response = chat.send_message(req.message)
-    raw_reply = response.text or ""
+    raw_reply = response.choices[0].message.content or ""
 
     chart_config = _extract_chart_request(raw_reply)
     clean_reply = _remove_chart_block(raw_reply)
@@ -203,15 +203,6 @@ def clear_history(session_id: str):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _to_gemini_history(history: list[dict]) -> list[dict]:
-    """Convert stored {role, content} history to Gemini {role, parts} format."""
-    result = []
-    for msg in history:
-        role = "model" if msg["role"] == "assistant" else "user"
-        result.append({"role": role, "parts": [msg["content"]]})
-    return result
-
 
 def _extract_chart_request(text: str) -> dict | None:
     match = re.search(r"<chart_request>\s*(\{.*?\})\s*</chart_request>", text, re.DOTALL)
