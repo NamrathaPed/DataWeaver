@@ -23,6 +23,7 @@ import os
 import re
 from typing import Any, AsyncGenerator
 
+import numpy as np
 import pandas as pd
 from openai import OpenAI
 from scipy import stats as scipy_stats
@@ -38,31 +39,55 @@ NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You are DataWeaver, an expert AI data analyst. You analyse data systematically \
-and always ground your conclusions in actual numbers.
+You are DataWeaver, an expert AI data analyst — think of yourself as a senior \
+data scientist who is methodical, curious, and always grounds conclusions in \
+actual numbers from the data.
 
 You have access to these tools:
-- get_dataset_overview   — no args needed
+- get_dataset_overview   — no args; call this first on every analysis
 - get_column_stats       — args: {"columns": ["col1", "col2"]}
 - get_value_distribution — args: {"column": "col_name", "top_n": 20}
-- filter_and_group       — args: {"group_by": "col", "value_column": "col", "agg": "mean|sum|count|median|max|min", "filter_col": "col (optional)", "filter_val": "val (optional)"}
+- filter_and_group       — args: {"group_by": "col", "value_column": "col", \
+"agg": "mean|sum|count|median|max|min", "filter_col": "col (optional)", "filter_val": "val (optional)"}
 - run_correlation        — args: {"col_a": "col", "col_b": "col"}
-- generate_chart         — args: {"chart_type": "bar|histogram|line|scatter|box", "title": "...", "col": "...", "col_a": "...", "col_b": "..."}
+- run_linear_regression  — args: {"target": "col", "features": ["col1", "col2"]}
+- generate_chart         — args: {"chart_type": "bar|histogram|line|scatter|box", \
+"title": "...", "col": "col_name", "col_a": "col_name", "col_b": "col_name"}
 - write_finding          — args: {"headline": "...", "detail": "...", "stat": "..."}
+- write_response         — args: {"content": "..."} — use this to send a plain conversational reply to the user (for brief intros or clarifying questions, instead of a full markdown report)
 
-HOW TO CALL A TOOL — respond with ONLY this JSON (no other text):
+HOW TO CALL A TOOL — respond with ONLY this JSON, nothing else:
 {"action": "tool_name", "args": {...}}
 
-HOW TO FINISH — when your analysis is complete, write your final report as plain \
-markdown. Start it with "## " so I know it is the report.
+HOW TO FINISH — when your analysis is complete, write your final report as \
+markdown. Start with "## " so the system knows it is the report.
 
 ANALYSIS APPROACH:
-1. Start with get_dataset_overview
-2. Form hypotheses relevant to the problem
-3. Use filter_and_group, run_correlation, get_value_distribution to test them
-4. Call write_finding for each confirmed insight
-5. Generate 2-4 charts for the most important findings
-6. Write the final markdown report
+1. Always call get_dataset_overview first
+2. For intro requests: be brief and conversational — give 2-3 key observations \
+   and ask what the user wants to analyze; do NOT run a full analysis
+3. For intro/greeting requests (e.g. "introduce this dataset"): call \
+   get_dataset_overview, then call write_response with a brief friendly \
+   summary (2-3 interesting observations) and one clarifying question. \
+   Do NOT run a full analysis for intro requests.
+4. For analysis requests: form clear hypotheses, test them with tools, then \
+   confirm or refute with numbers
+5. Use run_linear_regression when the user asks about "what predicts X", \
+   "what drives X", "factors affecting X", or wants a regression
+6. Use run_correlation before scatter charts to verify the relationship exists
+7. Call write_finding for each confirmed insight (max 4 findings per analysis)
+8. Generate 2-3 charts max — only for findings that are visually meaningful
+9. End analysis by writing a final markdown report starting with "## "
+
+CHART RULES — always follow these exactly:
+- histogram: use {"col": "column_name"}
+- bar: for categorical vs numeric, use {"col_a": "categorical_col", "col_b": "numeric_col"} \
+  OR for value counts of one column use {"col": "column_name"}
+- scatter: always use {"col_a": "x_col", "col_b": "y_col"}
+- line: use {"col": "datetime_or_numeric_col"}
+- box: for grouped, use {"col_a": "numeric_col", "col_b": "categorical_col"} \
+  OR for single column use {"col": "numeric_col"}
+- Only use column names that actually exist in the dataset
 
 Always cite specific numbers. Never state a finding without tool evidence first.
 """
@@ -89,20 +114,23 @@ async def run_agentic_analysis(
     overview = eda["dataset_overview"]
     col_types = eda["column_types"]
     dataset_context = (
-        f"Dataset: {overview['rows']:,} rows x {overview['cols']} columns\n"
+        f"Dataset: {overview['rows']:,} rows × {overview['cols']} columns\n"
         f"Columns: {', '.join(overview['columns'][:40])}\n"
-        f"Numeric: {col_types.get('numeric', [])}\n"
-        f"Categorical: {col_types.get('categorical', [])}\n"
-        f"Datetime: {col_types.get('datetime', [])}\n"
+        f"Numeric columns: {col_types.get('numeric', [])}\n"
+        f"Categorical columns: {col_types.get('categorical', [])}\n"
+        f"Datetime columns: {col_types.get('datetime', [])}\n"
         f"Missing values: {overview['null_pct']}% overall"
     )
 
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Dataset context:\n{dataset_context}\n\nAnalysis problem: {problem}"},
+        {
+            "role": "user",
+            "content": f"Dataset context:\n{dataset_context}\n\nUser request: {problem}",
+        },
     ]
 
-    max_iterations = 25
+    max_iterations = 30
 
     for _ in range(max_iterations):
         try:
@@ -110,7 +138,7 @@ async def run_agentic_analysis(
                 model=model_name,
                 messages=messages,
                 temperature=0.2,
-                max_tokens=1024,
+                max_tokens=1200,
             )
             text = (response.choices[0].message.content or "").strip()
         except Exception as exc:
@@ -144,15 +172,20 @@ async def run_agentic_analysis(
                 yield {"type": "tool_result", "tool": tool_name, "summary": error_msg}
                 result_text = f"Tool error: {error_msg}"
 
+            # write_response is terminal — it sends the reply and stops
+            if tool_name == "write_response":
+                yield {"type": "done"}
+                return
+
             messages.append({"role": "user", "content": result_text})
 
         # ---- Detect final report ---------------------------------------------
-        elif text.startswith("##") or (len(text) > 300 and not text.startswith("{")):
+        elif text.startswith("##") or (len(text) > 250 and not text.strip().startswith("{")):
             yield {"type": "report", "markdown": text}
             yield {"type": "done"}
             return
 
-        # ---- Thinking text ---------------------------------------------------
+        # ---- Thinking / planning text ----------------------------------------
         else:
             yield {"type": "thinking", "text": text}
             messages.append({"role": "user", "content": "Continue your analysis."})
@@ -165,7 +198,16 @@ async def run_agentic_analysis(
 # ---------------------------------------------------------------------------
 
 def _parse_tool_call(text: str) -> dict | None:
+    """Parse a tool call from LLM output.
+
+    Handles three formats:
+    1. Raw JSON starting with { (cleanest output)
+    2. JSON inside ```json ... ``` code blocks
+    3. JSON embedded anywhere in free text (llama-3.1 often adds preamble)
+    """
     stripped = text.strip()
+
+    # 1. Clean JSON starting at the beginning
     if stripped.startswith("{"):
         try:
             data = json.loads(stripped)
@@ -174,6 +216,7 @@ def _parse_tool_call(text: str) -> dict | None:
         except json.JSONDecodeError:
             pass
 
+    # 2. JSON in backtick code blocks
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if match:
         try:
@@ -182,6 +225,27 @@ def _parse_tool_call(text: str) -> dict | None:
                 return data
         except json.JSONDecodeError:
             pass
+
+    # 3. JSON object embedded anywhere in the text (model adds preamble text)
+    # Find the first { that could start a valid JSON object containing "action"
+    for m in re.finditer(r'\{', text):
+        start = m.start()
+        # Try expanding from this { to find a complete JSON object
+        depth = 0
+        for i, ch in enumerate(text[start:]):
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start:start + i + 1]
+                    try:
+                        data = json.loads(candidate)
+                        if isinstance(data, dict) and "action" in data:
+                            return data
+                    except json.JSONDecodeError:
+                        pass
+                    break
 
     return None
 
@@ -273,7 +337,8 @@ def _execute_tool(
             return {"error": "Not enough data"}, None
         r, p = scipy_stats.pearsonr(valid[col_a], valid[col_b])
         return {
-            "col_a": col_a, "col_b": col_b,
+            "col_a": col_a,
+            "col_b": col_b,
             "r": round(float(r), 4),
             "p_value": round(float(p), 6),
             "significant": bool(p < 0.05),
@@ -282,9 +347,86 @@ def _execute_tool(
             "n": len(valid),
         }, None
 
+    if tool_name == "run_linear_regression":
+        target: str = args["target"]
+        features: list[str] = args.get("features", [])
+
+        if target not in df.columns:
+            return {"error": f"Target column '{target}' not found"}, None
+        missing_feats = [f for f in features if f not in df.columns]
+        if missing_feats:
+            return {"error": f"Feature columns not found: {missing_feats}"}, None
+        if not features:
+            return {"error": "No feature columns specified"}, None
+
+        cols = [target] + features
+        data = df[cols].dropna()
+        if len(data) < 10:
+            return {"error": "Not enough data for regression (need ≥ 10 rows)"}, None
+
+        # Encode categorical features
+        X_parts = []
+        feature_names = []
+        for feat in features:
+            if data[feat].dtype == object or str(data[feat].dtype) == "category":
+                dummies = pd.get_dummies(data[feat], prefix=feat, drop_first=True)
+                X_parts.append(dummies.values)
+                feature_names.extend(dummies.columns.tolist())
+            else:
+                X_parts.append(data[feat].values.reshape(-1, 1))
+                feature_names.append(feat)
+
+        X = np.hstack(X_parts).astype(float)
+        y = data[target].values.astype(float)
+
+        # Use numpy for multi-feature (handles both single and multi-feature)
+        X_design = np.column_stack([np.ones(len(X)), X])
+        try:
+            coeffs, _, _, _ = np.linalg.lstsq(X_design, y, rcond=None)
+        except Exception as exc:
+            return {"error": f"Regression failed: {exc}"}, None
+
+        y_pred = X_design @ coeffs
+        ss_res = float(np.sum((y - y_pred) ** 2))
+        ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+        r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+        rmse = float(np.sqrt(ss_res / len(y)))
+
+        coeff_dict = {name: round(float(c), 6) for name, c in zip(feature_names, coeffs[1:])}
+        coeff_dict["intercept"] = round(float(coeffs[0]), 6)
+
+        # Individual correlations for context
+        individual_r = {}
+        for feat in features:
+            try:
+                r_val, _ = scipy_stats.pearsonr(data[feat].astype(float), y)
+                individual_r[feat] = round(float(r_val), 4)
+            except Exception:
+                pass
+
+        return {
+            "target": target,
+            "features": features,
+            "n_observations": len(data),
+            "r_squared": round(r_squared, 4),
+            "r_squared_pct": f"{r_squared * 100:.1f}%",
+            "rmse": round(rmse, 4),
+            "coefficients": coeff_dict,
+            "individual_correlations": individual_r,
+            "interpretation": (
+                f"The model explains {r_squared * 100:.1f}% of variance in '{target}'. "
+                f"RMSE = {rmse:.4f}. "
+                + (
+                    f"Strongest predictor: '{max(individual_r, key=lambda k: abs(individual_r[k]))}' "
+                    f"(r = {max(individual_r.values(), key=abs):.3f})."
+                    if individual_r else ""
+                )
+            ),
+        }, None
+
     if tool_name == "generate_chart":
-        chart_type: str = args["chart_type"]
-        title: str = args["title"]
+        chart_type: str = args.get("chart_type", "bar")
+        title: str = args.get("title", "")
         col = args.get("col")
         col_a = args.get("col_a")
         col_b = args.get("col_b")
@@ -292,10 +434,20 @@ def _execute_tool(
         kwargs: dict = {}
 
         try:
-            if chart_type in ("histogram", "line"):
+            if chart_type == "histogram":
                 target = col or col_a
                 if target and target in all_cols:
                     kwargs["col"] = target
+                else:
+                    return {"error": f"Column not found for histogram"}, None
+
+            elif chart_type == "line":
+                target = col or col_a
+                if target and target in all_cols:
+                    kwargs["col"] = target
+                else:
+                    return {"error": f"Column not found for line chart"}, None
+
             elif chart_type == "bar":
                 if col_a and col_b and col_a in all_cols and col_b in all_cols:
                     kwargs["col_a"] = col_a
@@ -304,33 +456,55 @@ def _execute_tool(
                     kwargs["col"] = col
                 elif col_a and col_a in all_cols:
                     kwargs["col"] = col_a
+                else:
+                    return {"error": "No valid column for bar chart"}, None
+
             elif chart_type == "scatter":
                 if col_a and col_b and col_a in all_cols and col_b in all_cols:
                     kwargs["col_a"] = col_a
                     kwargs["col_b"] = col_b
+                else:
+                    return {"error": "scatter requires col_a and col_b"}, None
+
             elif chart_type == "box":
-                target = col or col_a
-                if target and target in all_cols:
-                    kwargs["numeric_col"] = target
-                    if col_b and col_b in all_cols:
-                        kwargs["cat_col"] = col_b
+                numeric = col or col_a
+                if numeric and numeric in all_cols:
+                    kwargs["numeric_col"] = numeric
+                    cat = col_b
+                    if cat and cat in all_cols:
+                        kwargs["cat_col"] = cat
+                else:
+                    return {"error": "No valid numeric column for box chart"}, None
 
             figure = generate_single_chart(df, chart_type, **kwargs)
             if figure and "layout" in figure:
                 figure["layout"]["title"] = {"text": title}
 
             return {"chart_generated": True, "title": title}, {
-                "type": "chart", "figure": figure, "title": title,
+                "type": "chart",
+                "figure": figure,
+                "title": title,
             }
         except Exception as exc:
             return {"error": f"Chart failed: {exc}"}, None
 
     if tool_name == "write_finding":
-        headline: str = args["headline"]
-        detail: str = args["detail"]
+        headline: str = args.get("headline", "")
+        detail: str = args.get("detail", "")
         stat: str = args.get("stat", "")
         return {"recorded": True}, {
-            "type": "finding", "headline": headline, "detail": detail, "stat": stat,
+            "type": "finding",
+            "headline": headline,
+            "detail": detail,
+            "stat": stat,
+        }
+
+    if tool_name == "write_response":
+        # Conversational reply — rendered as a report (plain text, no ## needed)
+        content: str = args.get("content", "")
+        return {"sent": True}, {
+            "type": "report",
+            "markdown": content,
         }
 
     return {"error": f"Unknown tool: {tool_name}"}, None
@@ -363,8 +537,12 @@ def _summarize_result(tool_name: str, result: Any) -> str:
         return f"Top groups: {top}"
     if tool_name == "run_correlation":
         return f"r={result.get('r')}, p={result.get('p_value')} ({result.get('strength')})"
+    if tool_name == "run_linear_regression":
+        return f"R²={result.get('r_squared_pct')} — {result.get('interpretation', '')[:80]}"
     if tool_name == "generate_chart":
         return f"Generated: {result.get('title', '?')}"
     if tool_name == "write_finding":
         return "Finding recorded"
+    if tool_name == "write_response":
+        return "Response sent"
     return str(result)[:120]

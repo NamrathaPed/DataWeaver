@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { useTheme } from "@/hooks/useTheme";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   analyzeDataset,
@@ -29,6 +30,7 @@ export default function DashboardPage() {
   const [chatOpen, setChatOpen] = useState(true);
   const [extraCharts, setExtraCharts] = useState<{ chart: PlotlyFigure; title: string }[]>([]);
 
+  const { theme, toggle: toggleTheme } = useTheme();
   if (!sessionId) { navigate("/"); return null; }
 
   const analyzeQuery = useQuery({
@@ -36,14 +38,6 @@ export default function DashboardPage() {
     queryFn: () => analyzeDataset(sessionId),
     retry: false,
   });
-
-  if (analyzeQuery.error) {
-    const msg = (analyzeQuery.error as Error).message ?? "";
-    if (msg.includes("422") || msg.includes("not found")) {
-      navigate("/");
-      return null;
-    }
-  }
 
   const isReady = analyzeQuery.isSuccess;
 
@@ -100,8 +94,27 @@ export default function DashboardPage() {
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center space-y-3">
           <Spinner />
-          <p className="text-gray-500 font-medium">Analysing your dataset...</p>
-          <p className="text-gray-400 text-sm">Cleaning data, computing statistics, generating charts</p>
+          <p className="text-gray-600 font-medium">Loading dataset…</p>
+          <p className="text-gray-400 text-sm">Cleaning data and computing statistics</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (analyzeQuery.isError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center space-y-4">
+          <p className="text-gray-800 font-semibold text-lg">Session not found</p>
+          <p className="text-gray-500 text-sm max-w-xs">
+            This session may have expired. Please upload your file again.
+          </p>
+          <button
+            onClick={() => navigate("/")}
+            className="btn-primary text-sm"
+          >
+            ← Back to DataWeaver
+          </button>
         </div>
       </div>
     );
@@ -127,14 +140,23 @@ export default function DashboardPage() {
               </button>
             ))}
           </nav>
-          <button
-            onClick={() => setChatOpen((v) => !v)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors
-              ${chatOpen ? "bg-brand-500 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
-          >
-            <ChatIcon />
-            {chatOpen ? "Hide Chat" : "Ask AI"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setChatOpen((v) => !v)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors
+                ${chatOpen ? "bg-brand-500 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+            >
+              <ChatIcon />
+              {chatOpen ? "Hide Chat" : "Ask AI"}
+            </button>
+            <button
+              onClick={toggleTheme}
+              className="w-9 h-9 rounded-xl flex items-center justify-center text-gray-400 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-500 dark:hover:text-gray-200 dark:hover:bg-gray-800 transition-colors"
+              title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            >
+              {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -209,6 +231,22 @@ function ChatIcon() {
     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+    </svg>
+  );
+}
+
+function SunIcon() {
+  return (
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+    </svg>
+  );
+}
+
+function MoonIcon() {
+  return (
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
     </svg>
   );
 }
