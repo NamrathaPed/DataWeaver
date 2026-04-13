@@ -1,24 +1,16 @@
 """
 Supabase Client
 ---------------
-Thin wrapper around the Supabase Python SDK for:
-    - File storage  : upload / download / delete raw data files
-    - Results cache : store and retrieve EDA + insight JSON blobs
-    - Session index : track upload history per session
+Persists session metadata and chat messages to Supabase.
+Raw dataset files are NOT stored — sessions are in-memory only.
 
-All methods are optional — if SUPABASE_URL or SUPABASE_KEY are not
-set, the client initialises in "disabled" mode and every method
-returns a graceful no-op result. This keeps the backend functional
-for local development without Supabase credentials.
-
-Supabase table schema (create these in your Supabase project):
+Tables required (run in Supabase SQL Editor):
 
     uploads (
         id           uuid primary key default gen_random_uuid(),
         session_id   text not null,
         filename     text not null,
         file_hash    text not null,
-        storage_path text not null,
         extension    text not null,
         row_count    int,
         col_count    int,
@@ -26,35 +18,33 @@ Supabase table schema (create these in your Supabase project):
         created_at   timestamptz default now()
     )
 
-    results (
-        id           uuid primary key default gen_random_uuid(),
-        upload_id    uuid references uploads(id) on delete cascade,
-        eda_json     jsonb,
-        insights_json jsonb,
-        created_at   timestamptz default now()
+    chat_messages (
+        id         uuid primary key default gen_random_uuid(),
+        session_id text not null,
+        role       text not null,
+        content    text not null,
+        created_at timestamptz default now()
     )
+
+All methods are no-ops when SUPABASE_URL / SUPABASE_KEY are not set.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import Any
 
 from dotenv import load_dotenv
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-_STORAGE_BUCKET = "dataweaver-uploads"
-
 
 # ---------------------------------------------------------------------------
-# Client initialisation
+# Client
 # ---------------------------------------------------------------------------
 
 def _get_client():
-    """Return a Supabase client or None if credentials are missing."""
     url = os.getenv("SUPABASE_URL", "")
     key = os.getenv("SUPABASE_KEY", "")
     if not url or not key:
@@ -68,109 +58,23 @@ def _get_client():
 
 
 def is_enabled() -> bool:
-    """Return True if Supabase credentials are configured."""
     return bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_KEY"))
 
 
 # ---------------------------------------------------------------------------
-# File storage
-# ---------------------------------------------------------------------------
-
-def upload_file(
-    file_bytes: bytes,
-    storage_path: str,
-    content_type: str = "application/octet-stream",
-) -> dict[str, Any]:
-    """Upload raw file bytes to Supabase Storage.
-
-    Parameters
-    ----------
-    file_bytes:
-        Raw bytes of the uploaded file.
-    storage_path:
-        Path within the storage bucket, e.g. ``"session-id/filename.csv"``.
-    content_type:
-        MIME type of the file.
-
-    Returns
-    -------
-    dict with ``"path"`` on success, or ``"error"`` if Supabase is
-    disabled or the upload fails.
-    """
-    client = _get_client()
-    if client is None:
-        return {"path": None, "error": "Supabase not configured"}
-
-    try:
-        client.storage.from_(b_=_STORAGE_BUCKET).upload(
-            path=storage_path,
-            file=file_bytes,
-            file_options={"content-type": content_type, "upsert": "true"},
-        )
-        return {"path": storage_path, "error": None}
-    except Exception as exc:
-        logger.error("Supabase file upload failed: %s", exc)
-        return {"path": None, "error": str(exc)}
-
-
-def download_file(storage_path: str) -> bytes | None:
-    """Download a file from Supabase Storage.
-
-    Parameters
-    ----------
-    storage_path:
-        Path within the storage bucket.
-
-    Returns
-    -------
-    Raw bytes, or None if unavailable.
-    """
-    client = _get_client()
-    if client is None:
-        return None
-    try:
-        return client.storage.from_(b_=_STORAGE_BUCKET).download(storage_path)
-    except Exception as exc:
-        logger.error("Supabase file download failed: %s", exc)
-        return None
-
-
-def delete_file(storage_path: str) -> bool:
-    """Delete a file from Supabase Storage.
-
-    Returns True on success, False on failure.
-    """
-    client = _get_client()
-    if client is None:
-        return False
-    try:
-        client.storage.from_(b_=_STORAGE_BUCKET).remove([storage_path])
-        return True
-    except Exception as exc:
-        logger.error("Supabase file delete failed: %s", exc)
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Upload metadata
+# Session metadata
 # ---------------------------------------------------------------------------
 
 def save_upload_metadata(
     session_id: str,
     filename: str,
     file_hash: str,
-    storage_path: str,
     extension: str,
     row_count: int,
     col_count: int,
     size_kb: float,
 ) -> str | None:
-    """Insert a row into the ``uploads`` table.
-
-    Returns
-    -------
-    The new row's ``id`` (UUID string), or None on failure.
-    """
+    """Insert a row into the uploads table. Returns the new row id or None."""
     client = _get_client()
     if client is None:
         return None
@@ -179,13 +83,12 @@ def save_upload_metadata(
             client.table("uploads")
             .insert({
                 "session_id": session_id,
-                "filename": filename,
-                "file_hash": file_hash,
-                "storage_path": storage_path,
-                "extension": extension,
-                "row_count": row_count,
-                "col_count": col_count,
-                "size_kb": size_kb,
+                "filename":   filename,
+                "file_hash":  file_hash,
+                "extension":  extension,
+                "row_count":  row_count,
+                "col_count":  col_count,
+                "size_kb":    size_kb,
             })
             .execute()
         )
@@ -196,12 +99,7 @@ def save_upload_metadata(
 
 
 def get_upload_by_hash(file_hash: str) -> dict | None:
-    """Look up a previous upload by its file hash to detect duplicates.
-
-    Returns
-    -------
-    The matching upload row dict, or None if not found.
-    """
+    """Return an existing upload row matching the file hash, or None."""
     client = _get_client()
     if client is None:
         return None
@@ -219,82 +117,66 @@ def get_upload_by_hash(file_hash: str) -> dict | None:
         return None
 
 
-def list_uploads(session_id: str) -> list[dict]:
-    """Return all uploads for a given session, newest first.
-
-    Parameters
-    ----------
-    session_id:
-        The session UUID to filter by.
-
-    Returns
-    -------
-    List of upload row dicts.
-    """
+def list_all_sessions(limit: int = 50) -> list[dict]:
+    """Return the most recent upload sessions, newest first, deduplicated."""
     client = _get_client()
     if client is None:
         return []
     try:
         response = (
             client.table("uploads")
-            .select("id, filename, extension, row_count, col_count, size_kb, created_at")
-            .eq("session_id", session_id)
+            .select("session_id, filename, row_count, col_count, created_at")
             .order("created_at", desc=True)
+            .limit(limit)
             .execute()
         )
-        return response.data or []
+        seen: set[str] = set()
+        unique = []
+        for row in (response.data or []):
+            if row["session_id"] not in seen:
+                seen.add(row["session_id"])
+                unique.append(row)
+        return unique
     except Exception as exc:
-        logger.error("Failed to list uploads: %s", exc)
+        logger.error("Failed to list sessions: %s", exc)
         return []
 
 
 # ---------------------------------------------------------------------------
-# EDA + insight results cache
+# Chat messages
 # ---------------------------------------------------------------------------
 
-def save_results(
-    upload_id: str,
-    eda_json: dict[str, Any],
-    insights_json: dict[str, Any],
-) -> bool:
-    """Persist EDA and insight results linked to an upload.
-
-    Returns True on success.
-    """
+def save_chat_message(session_id: str, role: str, content: str) -> bool:
+    """Persist a single chat message. role is 'user' or 'assistant'."""
     client = _get_client()
     if client is None:
         return False
     try:
-        client.table("results").insert({
-            "upload_id": upload_id,
-            "eda_json": eda_json,
-            "insights_json": insights_json,
+        client.table("chat_messages").insert({
+            "session_id": session_id,
+            "role":       role,
+            "content":    content,
         }).execute()
         return True
     except Exception as exc:
-        logger.error("Failed to save results: %s", exc)
+        logger.error("Failed to save chat message: %s", exc)
         return False
 
 
-def get_results(upload_id: str) -> dict | None:
-    """Retrieve cached EDA and insight results for an upload.
-
-    Returns
-    -------
-    Dict with ``eda_json`` and ``insights_json``, or None if not cached.
-    """
+def get_chat_messages(session_id: str) -> list[dict]:
+    """Return all chat messages for a session, oldest first."""
     client = _get_client()
     if client is None:
-        return None
+        return []
     try:
         response = (
-            client.table("results")
-            .select("eda_json, insights_json, created_at")
-            .eq("upload_id", upload_id)
-            .limit(1)
+            client.table("chat_messages")
+            .select("role, content, created_at")
+            .eq("session_id", session_id)
+            .order("created_at", desc=False)
             .execute()
         )
-        return response.data[0] if response.data else None
+        return response.data or []
     except Exception as exc:
-        logger.error("Failed to retrieve results: %s", exc)
-        return None
+        logger.error("Failed to load chat messages: %s", exc)
+        return []

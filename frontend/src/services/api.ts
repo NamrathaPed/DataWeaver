@@ -301,6 +301,19 @@ export async function clearChatHistory(sessionId: string): Promise<void> {
   await http.post(`/chat/clear?session_id=${sessionId}`);
 }
 
+export interface SessionSummary {
+  session_id: string;
+  filename: string;
+  row_count: number;
+  col_count: number;
+  created_at: string;
+}
+
+export async function fetchAllSessions(): Promise<SessionSummary[]> {
+  const { data } = await http.get<{ sessions: SessionSummary[] }>("/upload/sessions");
+  return data.sessions;
+}
+
 // ---------------------------------------------------------------------------
 // Agent
 // ---------------------------------------------------------------------------

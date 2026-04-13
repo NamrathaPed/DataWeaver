@@ -21,6 +21,7 @@ import {
   analyzeDataset,
   selectSheet,
   runAgentAnalysis,
+  fetchAllSessions,
   type PlotlyFigure,
   type AgentEvent,
 } from "@/services/api";
@@ -181,6 +182,28 @@ export default function ChatPage() {
   const [chatsOpen,      setChatsOpen]      = useState(true);
   const [sessions,       setSessions]       = useState<StoredSession[]>(loadSessions);
   const [reports,        setReports]        = useState<StoredReport[]>(loadReports);
+
+  // ── Load sessions from Supabase on mount (merge with localStorage) ─────────
+  useEffect(() => {
+    fetchAllSessions().then((remote) => {
+      if (!remote.length) return;
+      const remapped: StoredSession[] = remote.map((s) => ({
+        sessionId:  s.session_id,
+        filename:   s.filename,
+        rows:       s.row_count,
+        cols:       s.col_count,
+        createdAt:  s.created_at,
+      }));
+      setSessions((local) => {
+        // Merge: remote is authoritative, keep any local-only entries
+        const remoteIds = new Set(remapped.map((s) => s.sessionId));
+        const localOnly = local.filter((s) => !remoteIds.has(s.sessionId));
+        const merged = [...remapped, ...localOnly];
+        saveSessions(merged);
+        return merged;
+      });
+    }).catch(() => { /* Supabase not configured — stay with localStorage */ });
+  }, []);
 
   // ── Refs ──────────────────────────────────────────────────────────────────
   const fileInputRef  = useRef<HTMLInputElement>(null);

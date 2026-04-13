@@ -1,12 +1,14 @@
 """
 Upload Router
 -------------
-POST /api/upload        — Upload a CSV or Excel file.
-GET  /api/upload/sheets — List sheets in an uploaded Excel file.
-GET  /api/upload/history — List previous uploads for a session.
+POST /api/upload         — Upload a CSV or Excel file.
+POST /api/upload/sheet   — Select a sheet from a multi-sheet Excel file.
+GET  /api/upload/sessions — List all past sessions from Supabase.
 """
 
 from __future__ import annotations
+
+import io
 
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import JSONResponse
@@ -18,7 +20,7 @@ from utils import supabase_client as sb
 
 router = APIRouter()
 
-# In-memory session store (replace with Redis for multi-instance deployments)
+# In-memory session store — holds DataFrames for the life of the server process
 _session_store: dict[str, dict] = {}
 
 
@@ -28,43 +30,34 @@ async def upload_file(
     session_id: str = Form(default=""),
     sheet_name: str = Form(default=""),
 ):
-    """Upload a CSV or Excel file and return a session ID + data preview.
-
-    - Validates extension and file size.
-    - Detects duplicate uploads via SHA-256 hash.
-    - Stores file in Supabase Storage if configured.
-    - Returns a session_id used for all subsequent API calls.
-    """
+    """Upload a CSV or Excel file and return a session ID + data preview."""
     raw = await file.read()
-
-    # Validate
     validate_upload(file.filename, len(raw))
 
-    # Dedup check via hash
     fhash = file_hash(raw)
-    existing = sb.get_upload_by_hash(fhash)
-    if existing:
-        sid = existing["session_id"]
-        cached = sb.get_results(existing["id"])
-        if cached:
-            return {
-                "session_id": sid,
-                "upload_id": existing["id"],
-                "filename": existing["filename"],
-                "row_count": existing["row_count"],
-                "col_count": existing["col_count"],
-                "cached": True,
-                "eda": cached["eda_json"],
-                "insights": cached["insights_json"],
-            }
 
-    # Parse file — wrap bytes in a BytesIO with .name so data_ingestion
-    # recognises it as an uploaded file object.
-    import io
+    # Dedup: if we've seen this exact file before, reuse the session
+    existing = sb.get_upload_by_hash(fhash)
+    if existing and existing["session_id"] in _session_store:
+        sid = existing["session_id"]
+        sess = _session_store[sid]
+        df = sess["df"]
+        return {
+            "session_id": sid,
+            "upload_id":  existing["id"],
+            "filename":   existing["filename"],
+            "extension":  existing["extension"],
+            "row_count":  existing["row_count"],
+            "col_count":  existing["col_count"],
+            "size_kb":    existing["size_kb"],
+            "columns":    df.columns.tolist(),
+            "preview":    df_to_json_records(df, max_rows=100),
+            "cached":     True,
+        }
 
     def _make_buf(data: bytes, name: str):
         buf = io.BytesIO(data)
-        buf.name = name  # required by data_ingestion._is_uploaded_file
+        buf.name = name
         return buf
 
     # Handle multi-sheet Excel
@@ -72,37 +65,30 @@ async def upload_file(
     if ext in ("xlsx", "xls") and not sheet_name:
         sheets = get_sheet_names(_make_buf(raw, file.filename))
         if len(sheets) > 1:
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "requires_sheet_selection": True,
-                    "sheets": sheets,
-                    "filename": file.filename,
-                },
-            )
+            return JSONResponse(status_code=200, content={
+                "requires_sheet_selection": True,
+                "sheets": sheets,
+                "filename": file.filename,
+            })
 
     result = load_file(_make_buf(raw, file.filename))
     df = result["df"]
 
-    # Assign session
     sid = session_id or new_session_id()
     _session_store[sid] = {
-        "df": df,
-        "filename": result["filename"],
+        "df":        df,
+        "filename":  result["filename"],
         "extension": result["extension"],
         "file_hash": fhash,
         "upload_id": None,
         "created_at": utc_now_iso(),
     }
 
-    # Persist to Supabase
-    storage_path = f"{sid}/{result['filename']}"
-    sb.upload_file(raw, storage_path)
+    # Persist metadata to Supabase (no file bytes saved)
     upload_id = sb.save_upload_metadata(
         session_id=sid,
         filename=result["filename"],
         file_hash=fhash,
-        storage_path=storage_path,
         extension=result["extension"],
         row_count=result["row_count"],
         col_count=result["col_count"],
@@ -110,19 +96,17 @@ async def upload_file(
     )
     _session_store[sid]["upload_id"] = upload_id
 
-    preview = df_to_json_records(df, max_rows=100)
-
     return {
         "session_id": sid,
-        "upload_id": upload_id,
-        "filename": result["filename"],
-        "extension": result["extension"],
-        "row_count": result["row_count"],
-        "col_count": result["col_count"],
-        "size_kb": result["size_kb"],
-        "columns": df.columns.tolist(),
-        "preview": preview,
-        "cached": False,
+        "upload_id":  upload_id,
+        "filename":   result["filename"],
+        "extension":  result["extension"],
+        "row_count":  result["row_count"],
+        "col_count":  result["col_count"],
+        "size_kb":    result["size_kb"],
+        "columns":    df.columns.tolist(),
+        "preview":    df_to_json_records(df, max_rows=100),
+        "cached":     False,
     }
 
 
@@ -132,9 +116,8 @@ async def select_sheet(
     sheet_name: str = Form(...),
     session_id: str = Form(default=""),
 ):
-    """Load a specific sheet from a previously uploaded Excel file."""
+    """Load a specific sheet from a multi-sheet Excel file."""
     from engine.data_ingestion import load_excel_sheet
-    import io
 
     raw = await file.read()
     buf = io.BytesIO(raw)
@@ -142,44 +125,62 @@ async def select_sheet(
 
     result = load_excel_sheet(buf, sheet_name)
     df = result["df"]
+    fhash = file_hash(raw)
 
     sid = session_id or new_session_id()
     _session_store[sid] = {
-        "df": df,
-        "filename": result["filename"],
+        "df":        df,
+        "filename":  result["filename"],
         "extension": result["extension"],
-        "file_hash": file_hash(raw),
+        "file_hash": fhash,
         "upload_id": None,
         "created_at": utc_now_iso(),
     }
 
+    upload_id = sb.save_upload_metadata(
+        session_id=sid,
+        filename=result["filename"],
+        file_hash=fhash,
+        extension=result["extension"],
+        row_count=result["row_count"],
+        col_count=result["col_count"],
+        size_kb=0,
+    )
+    _session_store[sid]["upload_id"] = upload_id
+
     return {
         "session_id": sid,
+        "upload_id":  upload_id,
         "sheet_name": sheet_name,
-        "filename": result["filename"],
-        "row_count": result["row_count"],
-        "col_count": result["col_count"],
-        "columns": df.columns.tolist(),
-        "preview": df_to_json_records(df, max_rows=100),
+        "filename":   result["filename"],
+        "row_count":  result["row_count"],
+        "col_count":  result["col_count"],
+        "columns":    df.columns.tolist(),
+        "preview":    df_to_json_records(df, max_rows=100),
+        "cached":     False,
     }
 
 
-@router.get("/history")
-def upload_history(session_id: str):
-    """Return previous uploads for a session from Supabase."""
-    uploads = sb.list_uploads(session_id)
-    return {"session_id": session_id, "uploads": uploads}
+@router.get("/sessions")
+def list_sessions():
+    """Return all past sessions from Supabase for the sidebar."""
+    sessions = sb.list_all_sessions(limit=50)
+    return {"sessions": sessions}
 
 
 # ---------------------------------------------------------------------------
-# Internal helper — other routers use this to retrieve the session DataFrame
+# Internal helper used by all other routers
 # ---------------------------------------------------------------------------
 
 def get_session_df(session_id: str):
-    """Return the DataFrame stored for a session, or raise ValueError."""
+    """Return the in-memory session dict, or raise ValueError if not found.
+
+    Sessions live for the life of the server process. If the server restarted,
+    the user needs to re-upload their file — raw files are not stored.
+    """
     session = _session_store.get(session_id)
     if session is None:
         raise ValueError(
-            f"Session '{session_id}' not found. Please upload a file first."
+            f"Session '{session_id}' has expired. Please re-upload your file to continue."
         )
     return session

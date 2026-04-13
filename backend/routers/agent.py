@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from engine.agent_engine import run_agentic_analysis
 from routers.analyze import get_cleaned_df, get_cached_eda
+from utils import supabase_client as sb
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -46,11 +47,26 @@ async def run_agent(req: AgentRunRequest):
     df = get_cleaned_df(req.session_id)
     eda = get_cached_eda(req.session_id)
 
+    # Save the user's message to Supabase
+    sb.save_chat_message(req.session_id, "user", req.problem)
+
+    assistant_parts: list[str] = []
+
     async def event_stream():
         try:
-            async for event in run_agentic_analysis(
-                req.problem, df, eda
-            ):
+            async for event in run_agentic_analysis(req.problem, df, eda):
+                # Collect text content to persist as one assistant message
+                if event.get("type") == "report":
+                    assistant_parts.append(event.get("markdown", ""))
+                elif event.get("type") == "finding":
+                    assistant_parts.append(
+                        f"**{event.get('headline', '')}** — {event.get('detail', '')}"
+                    )
+                elif event.get("type") == "done" and assistant_parts:
+                    sb.save_chat_message(
+                        req.session_id, "assistant", "\n\n".join(assistant_parts)
+                    )
+
                 yield f"data: {json.dumps(event, default=str)}\n\n"
         except Exception as exc:
             logger.exception("Agent stream error")
@@ -66,3 +82,14 @@ async def run_agent(req: AgentRunRequest):
             "Connection": "keep-alive",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Chat history endpoint
+# ---------------------------------------------------------------------------
+
+@router.get("/history")
+def get_history(session_id: str):
+    """Return saved chat messages for a session from Supabase."""
+    messages = sb.get_chat_messages(session_id)
+    return {"session_id": session_id, "messages": messages}
