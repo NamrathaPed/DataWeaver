@@ -1067,55 +1067,163 @@ function FindingCard({ headline, detail, stat }: { headline: string; detail: str
 function ChartCard({ figure, title }: { figure: PlotlyFigure; title: string }) {
   return (
     <div className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+      {title && (
+        <div className="px-4 pt-3 pb-1 flex items-center gap-2">
+          <div className="w-1 h-4 rounded-full bg-brand-500 shrink-0" />
+          <p className="text-sm font-semibold text-[var(--text-primary)] truncate">{title}</p>
+        </div>
+      )}
       <Plot
         data={figure.data as Plotly.Data[]}
         layout={{
           ...(figure.layout as Partial<Plotly.Layout>),
           autosize: true,
-          margin: { t: 36, r: 20, b: 44, l: 48 },
+          margin: { t: title ? 12 : 28, r: 24, b: 48, l: 56 },
           font: { family: "Inter, sans-serif", size: 11 },
           paper_bgcolor: "transparent",
           plot_bgcolor: "transparent",
+          legend: { orientation: "h", y: -0.18, font: { size: 10 } },
         }}
-        config={{ displayModeBar: false, responsive: true }}
-        style={{ width: "100%", height: 320 }}
+        config={{ displayModeBar: true, displaylogo: false, responsive: true, modeBarButtonsToRemove: ["lasso2d", "select2d", "toImage"] }}
+        style={{ width: "100%", height: 360 }}
         useResizeHandler
       />
-      <p className="px-4 pb-3 text-xs text-[var(--text-muted)] text-center">{title}</p>
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Simple markdown renderer
+// Markdown renderer — handles headings, lists, code blocks, bold/italic
 // ─────────────────────────────────────────────────────────────────────────────
 
 function SimpleMarkdown({ text }: { text: string }) {
-  return (
-    <>
-      {text.split("\n").map((line, i) => {
-        if (line.startsWith("### ")) return <h3 key={i} className="font-semibold text-sm text-[var(--text-primary)] mt-4 mb-1">{line.slice(4)}</h3>;
-        if (line.startsWith("## "))  return <h2 key={i} className="font-bold text-base text-[var(--text-primary)] mt-5 mb-2">{line.slice(3)}</h2>;
-        if (line.startsWith("# "))   return <h1 key={i} className="font-bold text-lg text-[var(--text-primary)] mt-5 mb-2">{line.slice(2)}</h1>;
-        if (line.startsWith("- ") || line.startsWith("* "))
-          return <li key={i} className="ml-4 list-disc text-[var(--text-secondary)] text-sm"><InlineMd text={line.slice(2)} /></li>;
-        if (line.trim() === "") return <div key={i} className="h-2" />;
-        return <p key={i} className="text-sm text-[var(--text-primary)] leading-relaxed"><InlineMd text={line} /></p>;
-      })}
-    </>
-  );
+  const lines = text.split("\n");
+  const nodes: React.ReactNode[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Fenced code block
+    if (line.startsWith("```")) {
+      const lang = line.slice(3).trim();
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].startsWith("```")) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      nodes.push(
+        <pre key={i} className="bg-[var(--bg-base)] border border-[var(--border)] rounded-xl p-4 my-3 overflow-x-auto">
+          <code className={`text-xs font-mono text-[var(--text-secondary)] ${lang ? `language-${lang}` : ""}`}>
+            {codeLines.join("\n")}
+          </code>
+        </pre>
+      );
+      i++;
+      continue;
+    }
+
+    // HR
+    if (/^[-*_]{3,}$/.test(line.trim())) {
+      nodes.push(<hr key={i} className="border-[var(--border)] my-4" />);
+      i++; continue;
+    }
+
+    // Headings
+    if (line.startsWith("### ")) {
+      nodes.push(<h3 key={i} className="font-semibold text-sm text-[var(--text-primary)] mt-5 mb-1.5">{line.slice(4)}</h3>);
+      i++; continue;
+    }
+    if (line.startsWith("## ")) {
+      nodes.push(<h2 key={i} className="font-bold text-base text-brand-500 mt-6 mb-2 pb-1 border-b border-brand-500/20">{line.slice(3)}</h2>);
+      i++; continue;
+    }
+    if (line.startsWith("# ")) {
+      nodes.push(<h1 key={i} className="font-bold text-lg text-[var(--text-primary)] mt-6 mb-2">{line.slice(2)}</h1>);
+      i++; continue;
+    }
+
+    // Bullet list — collect consecutive bullets
+    if (line.startsWith("- ") || line.startsWith("* ")) {
+      const items: string[] = [];
+      while (i < lines.length && (lines[i].startsWith("- ") || lines[i].startsWith("* "))) {
+        items.push(lines[i].slice(2));
+        i++;
+      }
+      nodes.push(
+        <ul key={i} className="list-disc ml-5 space-y-1 my-2">
+          {items.map((it, j) => (
+            <li key={j} className="text-sm text-[var(--text-secondary)] leading-relaxed">
+              <InlineMd text={it} />
+            </li>
+          ))}
+        </ul>
+      );
+      continue;
+    }
+
+    // Numbered list — collect consecutive numbered items
+    if (/^\d+\.\s/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\d+\.\s/.test(lines[i])) {
+        items.push(lines[i].replace(/^\d+\.\s/, ""));
+        i++;
+      }
+      nodes.push(
+        <ol key={i} className="list-decimal ml-5 space-y-1 my-2">
+          {items.map((it, j) => (
+            <li key={j} className="text-sm text-[var(--text-secondary)] leading-relaxed">
+              <InlineMd text={it} />
+            </li>
+          ))}
+        </ol>
+      );
+      continue;
+    }
+
+    // Blockquote
+    if (line.startsWith("> ")) {
+      nodes.push(
+        <blockquote key={i} className="border-l-2 border-brand-500/40 pl-3 my-2 text-sm text-[var(--text-secondary)] italic">
+          <InlineMd text={line.slice(2)} />
+        </blockquote>
+      );
+      i++; continue;
+    }
+
+    // Blank line
+    if (line.trim() === "") {
+      nodes.push(<div key={i} className="h-1.5" />);
+      i++; continue;
+    }
+
+    // Regular paragraph
+    nodes.push(
+      <p key={i} className="text-sm text-[var(--text-primary)] leading-relaxed">
+        <InlineMd text={line} />
+      </p>
+    );
+    i++;
+  }
+
+  return <>{nodes}</>;
 }
 
 function InlineMd({ text }: { text: string }) {
+  // Split on bold (**text**), italic (*text*), and inline code (`code`)
+  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g);
   return (
     <>
-      {text.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
-        part.startsWith("**") && part.endsWith("**") ? (
-          <strong key={i} className="font-semibold text-[var(--text-primary)]">{part.slice(2, -2)}</strong>
-        ) : (
-          <span key={i}>{part}</span>
-        )
-      )}
+      {parts.map((part, i) => {
+        if (part.startsWith("**") && part.endsWith("**"))
+          return <strong key={i} className="font-semibold text-[var(--text-primary)]">{part.slice(2, -2)}</strong>;
+        if (part.startsWith("*") && part.endsWith("*") && part.length > 2)
+          return <em key={i} className="italic text-[var(--text-secondary)]">{part.slice(1, -1)}</em>;
+        if (part.startsWith("`") && part.endsWith("`"))
+          return <code key={i} className="font-mono text-xs bg-[var(--bg-elevated)] border border-[var(--border)] px-1 py-0.5 rounded text-brand-500">{part.slice(1, -1)}</code>;
+        return <span key={i}>{part}</span>;
+      })}
     </>
   );
 }
