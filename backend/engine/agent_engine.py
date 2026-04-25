@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+from collections import deque
 from typing import Any, AsyncGenerator
 
 import numpy as np
@@ -33,6 +34,17 @@ from engine.chart_engine import generate_single_chart
 logger = logging.getLogger(__name__)
 
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+
+_ANALYSIS_KEYWORDS = frozenset({
+    "analyse", "analyze", "report", "chart", "show", "visualise", "visualize",
+    "predict", "correlate", "distribution", "summary", "explore", "compare",
+    "trend", "plot", "graph", "insight", "statistics", "breakdown", "patterns",
+})
+
+
+def _is_analytical_request(prompt: str) -> bool:
+    lower = prompt.lower()
+    return any(kw in lower for kw in _ANALYSIS_KEYWORDS)
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -126,6 +138,7 @@ async def run_agentic_analysis(
     problem: str,
     df: pd.DataFrame,
     eda: dict[str, Any],
+    history: list[dict] | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Run the agentic analysis and yield streaming events."""
     api_key = os.getenv("NVIDIA_API_KEY")
@@ -136,26 +149,85 @@ async def run_agentic_analysis(
     model_name = os.getenv("AGENT_MODEL", "meta/llama-3.1-70b-instruct")
     client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key)
 
-    overview = eda["dataset_overview"]
+    overview  = eda["dataset_overview"]
     col_types = eda["column_types"]
-    dataset_context = (
-        f"Dataset: {overview['rows']:,} rows × {overview['cols']} columns\n"
-        f"Columns: {', '.join(overview['columns'][:40])}\n"
-        f"Numeric columns: {col_types.get('numeric', [])}\n"
-        f"Categorical columns: {col_types.get('categorical', [])}\n"
-        f"Datetime columns: {col_types.get('datetime', [])}\n"
-        f"Missing values: {overview['null_pct']}% overall"
-    )
+    summary   = eda.get("summary", {})
+
+    # ── Numeric stats (mean / median / std / range) ───────────────────────────
+    numeric_lines = []
+    for col in col_types.get("numeric", [])[:12]:
+        s = summary.get(col, {})
+        if s:
+            numeric_lines.append(
+                f"  {col}: mean={s.get('mean', 0):.2f}, median={s.get('median', 0):.2f}, "
+                f"std={s.get('std', 0):.2f}, min={s.get('min', 0):.2f}, max={s.get('max', 0):.2f}, "
+                f"nulls={s.get('null_pct', 0):.1f}%"
+            )
+
+    # ── Top categorical values ────────────────────────────────────────────────
+    cat_lines = []
+    for col in col_types.get("categorical", [])[:8]:
+        s = summary.get(col, {})
+        top = list((s.get("top_values") or {}).items())[:5]
+        if top:
+            cat_lines.append(f"  {col}: {', '.join(f'{v}({c:,})' for v, c in top)}")
+
+    # ── Strong correlations ───────────────────────────────────────────────────
+    strong_pairs = eda.get("correlations", {}).get("strong_pairs", [])[:6]
+    corr_lines = [
+        f"  {p['col_a']} ↔ {p['col_b']}: r={p['r']:.3f} ({p['strength']}, {p['direction']})"
+        for p in strong_pairs
+    ]
+
+    # ── 3 sample rows ─────────────────────────────────────────────────────────
+    try:
+        sample_str = df.sample(min(3, len(df)), random_state=0).to_string(
+            max_cols=12, max_colwidth=18, index=False
+        )
+    except Exception:
+        sample_str = ""
+
+    dataset_context = "\n".join(filter(None, [
+        f"Dataset: {overview['rows']:,} rows × {overview['cols']} columns",
+        f"All columns: {', '.join(overview['columns'][:50])}",
+        f"Numeric columns: {col_types.get('numeric', [])}",
+        f"Categorical columns: {col_types.get('categorical', [])}",
+        f"Datetime columns: {col_types.get('datetime', [])}",
+        f"Missing values: {overview['null_pct']}% overall",
+        ("\nNumeric column stats:\n" + "\n".join(numeric_lines)) if numeric_lines else "",
+        ("\nTop categorical values:\n" + "\n".join(cat_lines)) if cat_lines else "",
+        ("\nStrong correlations already found:\n" + "\n".join(corr_lines)) if corr_lines else "",
+        (f"\nSample rows:\n{sample_str}") if sample_str else "",
+    ]))
+
+    # ── Conversation history (last 6 turns summarised) ────────────────────────
+    history_block = ""
+    if history:
+        turns = []
+        for h in history[-6:]:
+            role    = "User" if h.get("role") == "user" else "Assistant"
+            content = str(h.get("content", ""))[:400]
+            turns.append(f"{role}: {content}")
+        history_block = "\nPrevious conversation:\n" + "\n".join(turns) + "\n"
 
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
             "role": "user",
-            "content": f"Dataset context:\n{dataset_context}\n\nUser request: {problem}",
+            "content": (
+                f"Dataset context:\n{dataset_context}"
+                f"{history_block}"
+                f"\nUser request: {problem}"
+            ),
         },
     ]
 
-    max_iterations = 50
+    max_iterations     = 50
+    is_analytical      = _is_analytical_request(problem)
+    tools_called       = 0
+    charts_generated   = 0
+    findings_generated = 0
+    last_tools: deque[str] = deque(maxlen=4)  # repetition guard
 
     for _ in range(max_iterations):
         try:
@@ -175,19 +247,44 @@ async def run_agentic_analysis(
 
         messages.append({"role": "assistant", "content": text})
 
-        # ---- Detect tool call ------------------------------------------------
+        # ── Detect tool call ──────────────────────────────────────────────────
         tool_call = _parse_tool_call(text)
 
         if tool_call:
             tool_name = tool_call.get("action", "")
             tool_args = tool_call.get("args", {})
 
+            # write_response while charts/findings exist → model used wrong tool;
+            # redirect it to write the proper ## report instead
+            if tool_name == "write_response" and (charts_generated > 0 or findings_generated > 0):
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"You have already generated {charts_generated} chart(s) and "
+                        f"{findings_generated} finding(s). Do not use write_response here. "
+                        "Write the final analysis report now, starting your response with '## '. "
+                        "Include a dedicated section for each chart you generated."
+                    ),
+                })
+                continue
+
             yield {"type": "tool_call", "tool": tool_name, "args": tool_args}
+            tools_called += 1
+            last_tools.append(tool_name)
+
+            # Repetition guard: 4 identical consecutive calls means the agent is stuck
+            if len(last_tools) == 4 and len(set(last_tools)) == 1:
+                yield {"type": "error", "message": f"Agent stopped due to repeated tool calls: {tool_name}"}
+                return
 
             try:
                 result, extra_event = _execute_tool(tool_name, tool_args, df, eda)
                 if extra_event:
                     yield extra_event
+                    if extra_event.get("type") == "chart":
+                        charts_generated += 1
+                    elif extra_event.get("type") == "finding":
+                        findings_generated += 1
                 summary = _summarize_result(tool_name, result)
                 yield {"type": "tool_result", "tool": tool_name, "summary": summary}
                 result_text = f"Tool result for {tool_name}:\n{json.dumps(result, default=str)}"
@@ -197,30 +294,54 @@ async def run_agentic_analysis(
                 yield {"type": "tool_result", "tool": tool_name, "summary": error_msg}
                 result_text = f"Tool error: {error_msg}"
 
-            # write_response is terminal — it sends the reply and stops
+            # write_response with no charts/findings → pure conversational reply, stop
             if tool_name == "write_response":
                 yield {"type": "done"}
                 return
 
-            messages.append({"role": "user", "content": result_text})
+            # Include chart/finding progress so the model knows when it has enough
+            progress = (
+                f"\n\n[Progress: {charts_generated} chart(s), {findings_generated} finding(s) so far.]"
+            )
+            messages.append({"role": "user", "content": result_text + progress})
 
-        # ---- Detect final report ---------------------------------------------
-        elif (
-            text.startswith("##")
-            or "## " in text[:120]   # report buried after brief preamble
-            or (len(text) > 300 and not text.strip().startswith("{"))
-        ):
-            # If there's a preamble before the ## heading, trim it
+        # ── Final report: ## heading AND enough tool calls made ───────────────
+        elif (text.startswith("##") or "## " in text[:120]) and tools_called > 2:
             idx = text.find("## ")
             markdown = text[idx:] if idx > 0 else text
             yield {"type": "report", "markdown": markdown}
             yield {"type": "done"}
             return
 
-        # ---- Thinking / planning text ----------------------------------------
+        # ── Long text after tools but no ## → nudge model to write ## report ──
+        elif tools_called > 0 and len(text) > 200 and not text.strip().startswith("{"):
+            yield {"type": "thinking", "text": text}
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"You have generated {charts_generated} chart(s) and {findings_generated} finding(s). "
+                    "Now write the final comprehensive report. "
+                    "Start your response with '## ' followed by a title. "
+                    "Include one section per chart explaining what it shows and what it means."
+                ),
+            })
+
+        # ── No tools yet + analytical request → enforce JSON tool call ────────
+        elif tools_called == 0 and is_analytical:
+            yield {"type": "thinking", "text": text}
+            messages.append({
+                "role": "user",
+                "content": (
+                    "You must use tools to answer this request. "
+                    "Do NOT write prose. Respond with ONLY a JSON tool call, for example:\n"
+                    '{"action": "get_dataset_overview", "args": {}}'
+                ),
+            })
+
+        # ── Thinking / in-progress planning ───────────────────────────────────
         else:
             yield {"type": "thinking", "text": text}
-            messages.append({"role": "user", "content": "Continue your analysis."})
+            messages.append({"role": "user", "content": "Continue your analysis. Respond with a JSON tool call."})
 
     yield {"type": "done"}
 
@@ -346,7 +467,11 @@ def _execute_tool(
         if group_by not in working.columns or value_col not in working.columns:
             return {"error": "Column not found"}, None
 
-        grouped = getattr(working.groupby(group_by)[value_col], agg)()
+        # size() counts all rows (including NaN values); other aggs operate on value_col
+        if agg == "count":
+            grouped = working.groupby(group_by).size()
+        else:
+            grouped = getattr(working.groupby(group_by)[value_col], agg)()
         top = grouped.sort_values(ascending=False).head(20)
         return {
             "group_by": group_by,
@@ -401,7 +526,8 @@ def _execute_tool(
         feature_names = []
         for feat in features:
             if data[feat].dtype == object or str(data[feat].dtype) == "category":
-                dummies = pd.get_dummies(data[feat], prefix=feat, drop_first=True)
+                # cast to int: pd.get_dummies returns bool in newer pandas, which breaks np.hstack
+                dummies = pd.get_dummies(data[feat], prefix=feat, drop_first=True).astype(int)
                 X_parts.append(dummies.values)
                 feature_names.extend(dummies.columns.tolist())
             else:

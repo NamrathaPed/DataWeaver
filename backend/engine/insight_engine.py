@@ -98,7 +98,6 @@ def _call_llm(user_prompt: str, model_name: str) -> str:
         ],
         temperature=0.3,
         max_tokens=1024,
-        response_format={"type": "json_object"},
     )
     return response.choices[0].message.content or ""
 

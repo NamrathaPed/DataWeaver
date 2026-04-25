@@ -336,7 +336,8 @@ export function runAgentAnalysis(
   sessionId: string,
   problem: string,
   onEvent: (event: AgentEvent) => void,
-  onError?: (err: Error) => void
+  onError?: (err: Error) => void,
+  history?: { role: string; content: string }[],
 ): () => void {
   let active = true;
 
@@ -345,7 +346,7 @@ export function runAgentAnalysis(
       const response = await fetch("/api/agent/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, problem }),
+        body: JSON.stringify({ session_id: sessionId, problem, history: history ?? [] }),
       });
 
       if (!response.ok || !response.body) {

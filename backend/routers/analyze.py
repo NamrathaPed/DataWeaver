@@ -66,10 +66,7 @@ def analyze(
     _cleaned_cache[session_id] = df_clean
     _eda_cache[session_id] = eda_result
 
-    # Persist to Supabase (non-blocking — errors are logged, not raised)
-    upload_id = session.get("upload_id")
-    if upload_id:
-        sb.save_results(upload_id, eda_result, {})
+    # upload_id persisted via save_upload_metadata in the upload router
 
     return {
         "session_id": session_id,

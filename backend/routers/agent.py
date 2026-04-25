@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 class AgentRunRequest(BaseModel):
     session_id: str
     problem: str
+    history: list[dict] = []
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +55,7 @@ async def run_agent(req: AgentRunRequest):
 
     async def event_stream():
         try:
-            async for event in run_agentic_analysis(req.problem, df, eda):
+            async for event in run_agentic_analysis(req.problem, df, eda, req.history):
                 # Collect text content to persist as one assistant message
                 if event.get("type") == "report":
                     assistant_parts.append(event.get("markdown", ""))

@@ -125,9 +125,22 @@ export default function DashboardPage() {
       {/* Top bar */}
       <header className="bg-white border-b border-gray-100 sticky top-0 z-10">
         <div className="max-w-screen-2xl mx-auto px-6 h-14 flex items-center justify-between">
-          <button onClick={() => navigate("/")} className="text-xl font-bold text-gray-900 tracking-tight">
-            Data<span className="text-brand-500">Weaver</span>
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => navigate(`/chat/${sessionId}`)}
+              className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-brand-600 transition-colors"
+              title="Back to chat"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+              </svg>
+              <span>Back to chat</span>
+            </button>
+            <span className="text-gray-200">|</span>
+            <button onClick={() => navigate("/")} className="text-xl font-bold text-gray-900 tracking-tight">
+              Data<span className="text-brand-500">Weaver</span>
+            </button>
+          </div>
           <nav className="flex gap-1">
             {tabs.map((t) => (
               <button

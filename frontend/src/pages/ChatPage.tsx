@@ -70,14 +70,28 @@ function saveReports(reports: StoredReport[]) {
   localStorage.setItem(LS_REPORTS, JSON.stringify(reports.slice(0, 50)));
 }
 
-/** Persist messages for a session. Charts (PlotlyFigure) are included. */
+/** Persist messages for a session.
+ *  Chart figures are stripped before saving — each Plotly JSON can be 200KB+,
+ *  which silently blows the 5MB localStorage quota and wipes everything.
+ *  A placeholder is stored instead; ChartCard renders a "regenerate" prompt.
+ */
 function saveMessages(sessionId: string, msgs: ChatMsg[]) {
-  // Only save completed (non-streaming) messages to avoid partial state
   const stable = msgs.filter((m) => m.role !== "assistant" || !m.streaming);
+  const lightweight = stable.map((m): ChatMsg => {
+    if (m.role !== "assistant") return m;
+    return {
+      ...m,
+      items: m.items.map((item) =>
+        item.kind === "chart"
+          ? { ...item, figure: { data: [], layout: {} } }
+          : item
+      ),
+    };
+  });
   try {
-    localStorage.setItem(LS_MSGS_PFX + sessionId, JSON.stringify(stable));
+    localStorage.setItem(LS_MSGS_PFX + sessionId, JSON.stringify(lightweight));
   } catch {
-    // Quota exceeded — skip silently
+    // Still too large (many messages) — skip silently
   }
 }
 
@@ -183,6 +197,17 @@ export default function ChatPage() {
   const [sessions,       setSessions]       = useState<StoredSession[]>(loadSessions);
   const [reports,        setReports]        = useState<StoredReport[]>(loadReports);
 
+  // ── Restore session from localStorage when navigating back to /chat/:id ─────
+  // session state is lost on navigation; messages survive via localStorage
+  useEffect(() => {
+    if (!urlSessionId || session) return;
+    const stored = sessions.find((s) => s.sessionId === urlSessionId);
+    if (stored) {
+      setSession({ sessionId: stored.sessionId, filename: stored.filename, rows: stored.rows, cols: stored.cols });
+      setPhase("ready");
+    }
+  }, [urlSessionId, session, sessions]);
+
   // ── Load sessions from Supabase on mount (merge with localStorage) ─────────
   useEffect(() => {
     fetchAllSessions().then((remote) => {
@@ -276,11 +301,34 @@ export default function ChatPage() {
     [session]
   );
 
+  // ── Build compact history for the agent (user messages + assistant summaries) ──
+  const buildHistory = useCallback((msgs: ChatMsg[]): { role: string; content: string }[] => {
+    const result: { role: string; content: string }[] = [];
+    for (const m of msgs) {
+      if (m.role === "user") {
+        result.push({ role: "user", content: m.text });
+      } else if (m.role === "assistant" && !m.streaming) {
+        const content = m.items
+          .filter((i) => i.kind === "report" || i.kind === "finding")
+          .map((i) => i.kind === "report" ? i.markdown.slice(0, 400) : `${i.headline}: ${i.detail}`)
+          .join("\n");
+        if (content) result.push({ role: "assistant", content });
+      }
+    }
+    return result.slice(-8); // last 8 turns keeps context tight
+  }, []);
+
+  // ── Ref that always holds the latest messages (avoids stale closure in runAgent) ──
+  const messagesRef = useRef<ChatMsg[]>(messages);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
   // ── Run agent ─────────────────────────────────────────────────────────────
   const runAgent = useCallback(
     (sessionId: string, prompt: string) => {
       const aid = `a-${Date.now()}`;
-      setMessages((p) => [...p, { id: aid, role: "assistant", items: [], streaming: true }]);
+      const history = buildHistory(messagesRef.current);
+
+      setMessages((p) => [...p, { id: aid, role: "assistant" as const, items: [], streaming: true }]);
       setPhase("running");
 
       const stop = runAgentAnalysis(
@@ -291,12 +339,13 @@ export default function ChatPage() {
           setMessages((p) => appendItem(p, aid, { kind: "error", message: err.message }));
           setMessages((p) => stopStream(p, aid));
           setPhase("done");
-        }
+        },
+        history,
       );
       stopAgentRef.current = stop;
       return aid;
     },
-    [handleAgentEvent]
+    [handleAgentEvent, buildHistory]
   );
 
   // ── Upload flow ───────────────────────────────────────────────────────────
@@ -1065,6 +1114,8 @@ function FindingCard({ headline, detail, stat }: { headline: string; detail: str
 }
 
 function ChartCard({ figure, title }: { figure: PlotlyFigure; title: string }) {
+  const isEmpty = !figure.data || (figure.data as unknown[]).length === 0;
+
   return (
     <div className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
       {title && (
@@ -1073,21 +1124,30 @@ function ChartCard({ figure, title }: { figure: PlotlyFigure; title: string }) {
           <p className="text-sm font-semibold text-[var(--text-primary)] truncate">{title}</p>
         </div>
       )}
-      <Plot
-        data={figure.data as Plotly.Data[]}
-        layout={{
-          ...(figure.layout as Partial<Plotly.Layout>),
-          autosize: true,
-          margin: { t: title ? 12 : 28, r: 24, b: 48, l: 56 },
-          font: { family: "Inter, sans-serif", size: 11 },
-          paper_bgcolor: "transparent",
-          plot_bgcolor: "transparent",
-          legend: { orientation: "h", y: -0.18, font: { size: 10 } },
-        }}
-        config={{ displayModeBar: true, displaylogo: false, responsive: true, modeBarButtonsToRemove: ["lasso2d", "select2d", "toImage"] }}
-        style={{ width: "100%", height: 360 }}
-        useResizeHandler
-      />
+      {isEmpty ? (
+        <div className="flex flex-col items-center justify-center gap-2 h-32 text-[var(--text-muted)] text-xs px-4">
+          <svg className="w-6 h-6 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+          </svg>
+          <span className="text-center">Chart not stored (session reloaded) — ask the assistant to regenerate it.</span>
+        </div>
+      ) : (
+        <Plot
+          data={figure.data as Plotly.Data[]}
+          layout={{
+            ...(figure.layout as Partial<Plotly.Layout>),
+            autosize: true,
+            margin: { t: title ? 12 : 28, r: 24, b: 48, l: 56 },
+            font: { family: "Inter, sans-serif", size: 11 },
+            paper_bgcolor: "transparent",
+            plot_bgcolor: "transparent",
+            legend: { orientation: "h", y: -0.18, font: { size: 10 } },
+          }}
+          config={{ displayModeBar: true, displaylogo: false, responsive: true, modeBarButtonsToRemove: ["lasso2d", "select2d", "toImage"] }}
+          style={{ width: "100%", height: 360 }}
+          useResizeHandler
+        />
+      )}
     </div>
   );
 }
