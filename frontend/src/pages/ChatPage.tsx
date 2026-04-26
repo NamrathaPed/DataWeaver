@@ -1,9 +1,3 @@
-/**
- * ChatPage — main application page.
- * Layout: collapsible left sidebar (Reports, Chats, View) + centred chat area.
- * All agent/upload/streaming logic is preserved from the original.
- */
-
 import {
   useState,
   useRef,
@@ -50,31 +44,23 @@ interface StoredReport {
 
 const LS_SESSIONS = "dw_sessions";
 const LS_REPORTS  = "dw_reports";
-const LS_MSGS_PFX = "dw_msgs_"; // per-session message key
+const LS_MSGS_PFX = "dw_msgs_";
 
 function loadSessions(): StoredSession[] {
   try { return JSON.parse(localStorage.getItem(LS_SESSIONS) ?? "[]"); }
   catch { return []; }
 }
-
 function saveSessions(sessions: StoredSession[]) {
   localStorage.setItem(LS_SESSIONS, JSON.stringify(sessions.slice(0, 20)));
 }
-
 function loadReports(): StoredReport[] {
   try { return JSON.parse(localStorage.getItem(LS_REPORTS) ?? "[]"); }
   catch { return []; }
 }
-
 function saveReports(reports: StoredReport[]) {
   localStorage.setItem(LS_REPORTS, JSON.stringify(reports.slice(0, 50)));
 }
 
-/** Persist messages for a session.
- *  Chart figures are stripped before saving — each Plotly JSON can be 200KB+,
- *  which silently blows the 5MB localStorage quota and wipes everything.
- *  A placeholder is stored instead; ChartCard renders a "regenerate" prompt.
- */
 function saveMessages(sessionId: string, msgs: ChatMsg[]) {
   const stable = msgs.filter((m) => m.role !== "assistant" || !m.streaming);
   const lightweight = stable.map((m): ChatMsg => {
@@ -82,26 +68,21 @@ function saveMessages(sessionId: string, msgs: ChatMsg[]) {
     return {
       ...m,
       items: m.items.map((item) =>
-        item.kind === "chart"
-          ? { ...item, figure: { data: [], layout: {} } }
-          : item
+        item.kind === "chart" ? { ...item, figure: { data: [], layout: {} } } : item
       ),
     };
   });
   try {
     localStorage.setItem(LS_MSGS_PFX + sessionId, JSON.stringify(lightweight));
-  } catch {
-    // Still too large (many messages) — skip silently
-  }
+  } catch { /* quota exceeded — skip */ }
 }
-
 function loadMessages(sessionId: string): ChatMsg[] {
   try { return JSON.parse(localStorage.getItem(LS_MSGS_PFX + sessionId) ?? "[]"); }
   catch { return []; }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Chat / agent types
+// Types
 // ─────────────────────────────────────────────────────────────────────────────
 
 type Phase = "welcome" | "uploading" | "ready" | "running" | "done";
@@ -126,7 +107,7 @@ type ChatMsg =
   | { id: string; role: "assistant"; items: AssistantItem[]; streaming: boolean };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pure message helpers
+// Message helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 function appendItem(msgs: ChatMsg[], aid: string, item: AssistantItem): ChatMsg[] {
@@ -134,22 +115,17 @@ function appendItem(msgs: ChatMsg[], aid: string, item: AssistantItem): ChatMsg[
     m.id === aid && m.role === "assistant" ? { ...m, items: [...m.items, item] } : m
   );
 }
-
 function markResult(msgs: ChatMsg[], aid: string, tool: string, result: string): ChatMsg[] {
   return msgs.map((m) => {
     if (m.id !== aid || m.role !== "assistant") return m;
     const items = [...m.items];
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
-      if (it.kind === "tool" && it.name === tool && !it.result) {
-        items[i] = { ...it, result };
-        break;
-      }
+      if (it.kind === "tool" && it.name === tool && !it.result) { items[i] = { ...it, result }; break; }
     }
     return { ...m, items };
   });
 }
-
 function stopStream(msgs: ChatMsg[], aid: string): ChatMsg[] {
   return msgs.map((m) =>
     m.id === aid && m.role === "assistant" ? { ...m, streaming: false } : m
@@ -157,18 +133,43 @@ function stopStream(msgs: ChatMsg[], aid: string): ChatMsg[] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tool label map
+// Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TOOL_LABELS: Record<string, string> = {
-  get_dataset_overview:    "Reading dataset overview",
-  get_column_stats:        "Fetching column statistics",
-  get_value_distribution:  "Computing value distribution",
-  filter_and_group:        "Grouping & aggregating data",
-  run_correlation:         "Running correlation analysis",
-  run_linear_regression:   "Running linear regression",
-  generate_chart:          "Generating chart",
-  write_finding:           "Recording finding",
+  get_dataset_overview:   "Reading dataset overview",
+  get_column_stats:       "Fetching column statistics",
+  get_value_distribution: "Computing value distribution",
+  filter_and_group:       "Grouping & aggregating data",
+  run_correlation:        "Running correlation analysis",
+  run_linear_regression:  "Running linear regression",
+  generate_chart:         "Generating chart",
+  write_finding:          "Recording finding",
+};
+
+const SUGGESTION_CHIPS = [
+  "Summarise key trends",
+  "Find anomalies",
+  "Show correlations",
+  "Generate a report",
+];
+
+// Design tokens
+const T = {
+  bg:        "#0D0F0F",
+  sidebar:   "#111313",
+  surface:   "#141616",
+  teal:      "#1D9694",
+  tealHover: "#22ADAB",
+  tealTint:  "rgba(29,150,148,0.1)",
+  tealBorder:"rgba(29,150,148,0.2)",
+  border:    "rgba(255,255,255,0.06)",
+  borderIn:  "rgba(255,255,255,0.1)",
+  textPri:   "#ffffff",
+  textSec:   "rgba(255,255,255,0.55)",
+  textMut:   "rgba(255,255,255,0.3)",
+  textDim:   "rgba(255,255,255,0.2)",
+  iconClr:   "rgba(255,255,255,0.45)",
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -180,25 +181,16 @@ export default function ChatPage() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
   const { theme, toggle: toggleTheme } = useTheme();
 
-  // ── Core chat state ────────────────────────────────────────────────────────
-  const [phase,       setPhase]       = useState<Phase>(urlSessionId ? "ready" : "welcome");
-  const [session,     setSession]     = useState<SessionInfo | null>(null);
-  const [messages,    setMessages]    = useState<ChatMsg[]>(
-    () => urlSessionId ? loadMessages(urlSessionId) : []
-  );
-  const [input,       setInput]       = useState("");
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
-  const [sheetOptions,setSheetOptions]= useState<{ file: File; sheets: string[] } | null>(null);
+  const [phase,        setPhase]        = useState<Phase>(urlSessionId ? "ready" : "welcome");
+  const [session,      setSession]      = useState<SessionInfo | null>(null);
+  const [messages,     setMessages]     = useState<ChatMsg[]>(() => urlSessionId ? loadMessages(urlSessionId) : []);
+  const [input,        setInput]        = useState("");
+  const [pendingFile,  setPendingFile]  = useState<File | null>(null);
+  const [sheetOptions, setSheetOptions] = useState<{ file: File; sheets: string[] } | null>(null);
+  const [sidebarOpen,  setSidebarOpen]  = useState(true);
+  const [sessions,     setSessions]     = useState<StoredSession[]>(loadSessions);
+  const [_reports,     setReports]      = useState<StoredReport[]>(loadReports);
 
-  // ── Sidebar state ─────────────────────────────────────────────────────────
-  const [sidebarOpen,    setSidebarOpen]    = useState(true);
-  const [reportsOpen,    setReportsOpen]    = useState(true);
-  const [chatsOpen,      setChatsOpen]      = useState(true);
-  const [sessions,       setSessions]       = useState<StoredSession[]>(loadSessions);
-  const [reports,        setReports]        = useState<StoredReport[]>(loadReports);
-
-  // ── Restore session from localStorage when navigating back to /chat/:id ─────
-  // session state is lost on navigation; messages survive via localStorage
   useEffect(() => {
     if (!urlSessionId || session) return;
     const stored = sessions.find((s) => s.sessionId === urlSessionId);
@@ -208,50 +200,37 @@ export default function ChatPage() {
     }
   }, [urlSessionId, session, sessions]);
 
-  // ── Load sessions from Supabase on mount (merge with localStorage) ─────────
   useEffect(() => {
     fetchAllSessions().then((remote) => {
       if (!remote.length) return;
       const remapped: StoredSession[] = remote.map((s) => ({
-        sessionId:  s.session_id,
-        filename:   s.filename,
-        rows:       s.row_count,
-        cols:       s.col_count,
-        createdAt:  s.created_at,
+        sessionId: s.session_id, filename: s.filename,
+        rows: s.row_count, cols: s.col_count, createdAt: s.created_at,
       }));
       setSessions((local) => {
-        // Merge: remote is authoritative, keep any local-only entries
         const remoteIds = new Set(remapped.map((s) => s.sessionId));
-        const localOnly = local.filter((s) => !remoteIds.has(s.sessionId));
-        const merged = [...remapped, ...localOnly];
+        const merged = [...remapped, ...local.filter((s) => !remoteIds.has(s.sessionId))];
         saveSessions(merged);
         return merged;
       });
-    }).catch(() => { /* Supabase not configured — stay with localStorage */ });
+    }).catch(() => {});
   }, []);
 
-  // ── Refs ──────────────────────────────────────────────────────────────────
-  const fileInputRef  = useRef<HTMLInputElement>(null);
-  const textareaRef   = useRef<HTMLTextAreaElement>(null);
-  const bottomRef     = useRef<HTMLDivElement>(null);
-  const stopAgentRef  = useRef<(() => void) | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef  = useRef<HTMLTextAreaElement>(null);
+  const bottomRef    = useRef<HTMLDivElement>(null);
+  const stopAgentRef = useRef<(() => void) | null>(null);
 
-  // ── Auto-scroll ───────────────────────────────────────────────────────────
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  // ── Persist messages to localStorage whenever they settle ─────────────────
   useEffect(() => {
     const sid = session?.sessionId ?? urlSessionId;
     if (!sid || messages.length === 0) return;
-    // Debounce: only save when no message is actively streaming
-    const isStreaming = messages.some((m) => m.role === "assistant" && m.streaming);
-    if (!isStreaming) saveMessages(sid, messages);
+    if (!messages.some((m) => m.role === "assistant" && m.streaming)) saveMessages(sid, messages);
   }, [messages, session, urlSessionId]);
 
-  // ── Cleanup agent on unmount ──────────────────────────────────────────────
   useEffect(() => () => { stopAgentRef.current?.(); }, []);
 
-  // ── Agent event handler ───────────────────────────────────────────────────
   const handleAgentEvent = useCallback(
     (aid: string, event: AgentEvent, localSetPhase: (p: Phase) => void) => {
       switch (event.type) {
@@ -270,19 +249,15 @@ export default function ChatPage() {
           break;
         case "report":
           setMessages((p) => appendItem(p, aid, { kind: "report", markdown: event.markdown }));
-          // Persist report to localStorage
           setReports((prev) => {
-            const updated = [
-              {
-                id: `r-${Date.now()}`,
-                sessionId: session?.sessionId ?? "",
-                filename: session?.filename ?? "Unknown",
-                markdown: event.markdown,
-                title: session?.filename ? `Analysis — ${session.filename}` : "Analysis Report",
-                createdAt: new Date().toISOString(),
-              },
-              ...prev,
-            ];
+            const updated = [{
+              id: `r-${Date.now()}`,
+              sessionId: session?.sessionId ?? "",
+              filename: session?.filename ?? "Unknown",
+              markdown: event.markdown,
+              title: session?.filename ? `Analysis — ${session.filename}` : "Analysis Report",
+              createdAt: new Date().toISOString(),
+            }, ...prev];
             saveReports(updated);
             return updated;
           });
@@ -301,7 +276,6 @@ export default function ChatPage() {
     [session]
   );
 
-  // ── Build compact history for the agent (user messages + assistant summaries) ──
   const buildHistory = useCallback((msgs: ChatMsg[]): { role: string; content: string }[] => {
     const result: { role: string; content: string }[] = [];
     for (const m of msgs) {
@@ -315,25 +289,20 @@ export default function ChatPage() {
         if (content) result.push({ role: "assistant", content });
       }
     }
-    return result.slice(-8); // last 8 turns keeps context tight
+    return result.slice(-8);
   }, []);
 
-  // ── Ref that always holds the latest messages (avoids stale closure in runAgent) ──
   const messagesRef = useRef<ChatMsg[]>(messages);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
 
-  // ── Run agent ─────────────────────────────────────────────────────────────
   const runAgent = useCallback(
     (sessionId: string, prompt: string) => {
       const aid = `a-${Date.now()}`;
       const history = buildHistory(messagesRef.current);
-
       setMessages((p) => [...p, { id: aid, role: "assistant" as const, items: [], streaming: true }]);
       setPhase("running");
-
       const stop = runAgentAnalysis(
-        sessionId,
-        prompt,
+        sessionId, prompt,
         (event) => handleAgentEvent(aid, event, setPhase),
         (err) => {
           setMessages((p) => appendItem(p, aid, { kind: "error", message: err.message }));
@@ -348,48 +317,31 @@ export default function ChatPage() {
     [handleAgentEvent, buildHistory]
   );
 
-  // ── Upload flow ───────────────────────────────────────────────────────────
   const processFile = useCallback(
     async (file: File, sheetName?: string) => {
       const fid = `f-${Date.now()}`;
       setMessages((p) => [...p, { id: fid, role: "file", filename: file.name, rows: 0, cols: 0, status: "loading" }]);
       setPhase("uploading");
-
       try {
         const res = sheetName ? await selectSheet(file, sheetName) : await uploadFile(file);
-
         if (res.requires_sheet_selection && res.sheets) {
           setSheetOptions({ file, sheets: res.sheets });
           setMessages((p) => p.filter((m) => m.id !== fid));
           setPhase("welcome");
           return;
         }
-
         await analyzeDataset(res.session_id);
-
         const info: SessionInfo = { sessionId: res.session_id, filename: res.filename, rows: res.row_count, cols: res.col_count };
         setSession(info);
-
-        setMessages((p) =>
-          p.map((m) =>
-            m.id === fid
-              ? ({ ...m, status: "ready", rows: res.row_count, cols: res.col_count } as ChatMsg)
-              : m
-          )
-        );
-
+        setMessages((p) => p.map((m) => m.id === fid ? ({ ...m, status: "ready", rows: res.row_count, cols: res.col_count } as ChatMsg) : m));
         navigate(`/chat/${res.session_id}`, { replace: true });
         setPhase("ready");
-
-        // Persist session to localStorage
         setSessions((prev) => {
           const filtered = prev.filter((s) => s.sessionId !== res.session_id);
-          const updated  = [{ sessionId: res.session_id, filename: res.filename, rows: res.row_count, cols: res.col_count, createdAt: new Date().toISOString() }, ...filtered];
+          const updated = [{ sessionId: res.session_id, filename: res.filename, rows: res.row_count, cols: res.col_count, createdAt: new Date().toISOString() }, ...filtered];
           saveSessions(updated);
           return updated;
         });
-
-        // Auto-run intro
         runAgent(
           res.session_id,
           `I've just uploaded "${res.filename}" (${res.row_count.toLocaleString()} rows, ${res.col_count} columns). ` +
@@ -405,7 +357,6 @@ export default function ChatPage() {
     [navigate, runAgent]
   );
 
-  // ── Send message ──────────────────────────────────────────────────────────
   const sendMessage = useCallback(() => {
     if (phase === "uploading" || phase === "running") return;
     if (pendingFile) {
@@ -423,7 +374,6 @@ export default function ChatPage() {
     runAgent(session.sessionId, text);
   }, [phase, pendingFile, input, session, processFile, runAgent]);
 
-  // ── Dropzone ──────────────────────────────────────────────────────────────
   const onDrop = useCallback((files: File[]) => { if (files[0]) processFile(files[0]); }, [processFile]);
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -436,7 +386,6 @@ export default function ChatPage() {
     disabled: phase === "uploading" || phase === "running",
   });
 
-  // ── Open session from sidebar ─────────────────────────────────────────────
   const openSession = (s: StoredSession) => {
     navigate(`/chat/${s.sessionId}`);
     setMessages(loadMessages(s.sessionId));
@@ -445,25 +394,33 @@ export default function ChatPage() {
     setInput("");
   };
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Render
+  // ─────────────────────────────────────────────────────────────────────────
+
   return (
     <div
       {...getRootProps()}
-      className="h-screen flex flex-col bg-[var(--bg-base)] relative overflow-hidden"
+      className="h-screen flex relative overflow-hidden"
+      style={{ background: T.bg }}
     >
       <input {...getInputProps()} />
 
-      {/* ── Drag overlay ──────────────────────────────────────────────────── */}
+      {/* Drag overlay */}
       {isDragActive && (
-        <div className="absolute inset-0 z-50 pointer-events-none flex items-center justify-center bg-brand-500/10 border-2 border-dashed border-brand-500">
+        <div
+          className="absolute inset-0 z-50 pointer-events-none flex items-center justify-center"
+          style={{ background: T.tealTint, border: `2px dashed ${T.teal}` }}
+        >
           <div className="text-center space-y-2">
             <div className="text-5xl">📂</div>
-            <p className="font-semibold text-brand-600 dark:text-brand-400 text-lg">Drop to upload</p>
-            <p className="text-sm text-brand-500/70">CSV, XLSX, XLS</p>
+            <p className="font-semibold text-lg" style={{ color: T.teal }}>Drop to upload</p>
+            <p className="text-sm" style={{ color: T.textMut }}>CSV, XLSX, XLS</p>
           </div>
         </div>
       )}
 
-      {/* ── Sheet picker modal ─────────────────────────────────────────────── */}
+      {/* Sheet picker */}
       {sheetOptions && (
         <SheetPicker
           sheets={sheetOptions.sheets}
@@ -472,215 +429,182 @@ export default function ChatPage() {
         />
       )}
 
-      {/* ── Header ────────────────────────────────────────────────────────── */}
-      <header className="shrink-0 h-14 flex items-center justify-between px-4 border-b border-[var(--border)] bg-[var(--bg-surface)] z-20">
-        <div className="flex items-center gap-3">
-          {/* Sidebar toggle (header level) */}
-          <button
-            onClick={() => setSidebarOpen((o) => !o)}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] transition-colors"
-            title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
-          >
-            <SidebarToggleIcon open={sidebarOpen} />
-          </button>
-          <button
-            onClick={() => navigate("/")}
-            className="text-lg font-bold tracking-tight text-[var(--text-primary)]"
-          >
-            Data<span className="text-brand-500">Weaver</span>
-          </button>
-        </div>
+      {/* ── Sidebar ───────────────────────────────────────────────────────── */}
+      <aside
+        className="shrink-0 flex flex-col transition-all duration-200 ease-in-out overflow-hidden"
+        style={{
+          width: sidebarOpen ? 240 : 52,
+          background: T.sidebar,
+          borderRight: `1px solid ${T.border}`,
+        }}
+      >
+        {sidebarOpen ? (
+          <div className="flex flex-col h-full overflow-hidden">
 
-        <div className="flex items-center gap-2">
-          {session && (
-            <span className="hidden sm:inline text-xs text-[var(--text-muted)] bg-[var(--bg-elevated)] px-2.5 py-1 rounded-full border border-[var(--border)]">
-              {session.filename} · {session.rows.toLocaleString()} rows
-            </span>
-          )}
-          <ThemeToggle theme={theme} toggle={toggleTheme} />
-        </div>
-      </header>
-
-      {/* ── Body (sidebar + main) ──────────────────────────────────────────── */}
-      <div className="flex flex-1 min-h-0">
-
-        {/* ── Sidebar ─────────────────────────────────────────────────────── */}
-        <aside
-          className={`shrink-0 flex flex-col border-r border-[var(--border)] bg-[var(--bg-surface)] transition-all duration-200 ease-in-out overflow-hidden ${
-            sidebarOpen ? "w-64" : "w-14"
-          }`}
-        >
-          {sidebarOpen ? (
-            /* ── Expanded sidebar ─────────────────────────────────────────── */
-            <div className="flex flex-col h-full overflow-hidden">
-
-              {/* Reports section */}
-              <SidebarSection
-                label="Reports"
-                icon={<ReportsIcon />}
-                open={reportsOpen}
-                onToggle={() => setReportsOpen((o) => !o)}
-                count={reports.length}
+            {/* Logo row */}
+            <div className="flex items-center justify-between px-5 pt-5 pb-4 shrink-0">
+              <button
+                onClick={() => navigate("/")}
+                className="leading-none tracking-tight"
+                style={{ fontSize: 22, fontWeight: 500, color: T.textPri }}
               >
-                {reports.length === 0 ? (
-                  <p className="text-xs text-[var(--text-muted)] px-3 py-2 italic">
-                    No reports yet. Ask the AI to analyse your data and a report will appear here.
-                  </p>
-                ) : (
-                  reports.map((r) => (
-                    <button
-                      key={r.id}
-                      onClick={() => navigate(`/dashboard/${r.sessionId}`)}
-                      className="w-full text-left px-3 py-2 rounded-lg hover:bg-[var(--bg-elevated)] group transition-colors"
-                    >
-                      <p className="text-xs font-medium text-[var(--text-primary)] truncate group-hover:text-brand-500 transition-colors">
-                        {r.title}
-                      </p>
-                      <p className="text-xs text-[var(--text-muted)] mt-0.5">
-                        {formatDate(r.createdAt)}
-                      </p>
-                    </button>
-                  ))
-                )}
-              </SidebarSection>
+                Data<span style={{ color: T.teal }}>Weaver</span>
+              </button>
+              <CollapseToggle onClick={() => setSidebarOpen(false)} />
+            </div>
 
-              {/* Chats section */}
-              <SidebarSection
-                label="Chats"
-                icon={<ChatsIcon />}
-                open={chatsOpen}
-                onToggle={() => setChatsOpen((o) => !o)}
-                count={sessions.length}
-                extra={
-                  <button
-                    onClick={() => navigate("/chat")}
-                    className="w-5 h-5 rounded flex items-center justify-center text-[var(--text-muted)] hover:text-brand-500 hover:bg-brand-500/10 transition-colors"
-                    title="New chat"
-                  >
-                    <NewChatIcon />
-                  </button>
-                }
-              >
-                {sessions.length === 0 ? (
-                  <p className="text-xs text-[var(--text-muted)] px-3 py-2 italic">
-                    No chats yet. Upload a file to start.
-                  </p>
-                ) : (
-                  sessions.map((s) => (
-                    <button
-                      key={s.sessionId}
-                      onClick={() => openSession(s)}
-                      className={`w-full text-left px-3 py-2 rounded-lg hover:bg-[var(--bg-elevated)] group transition-colors ${
-                        session?.sessionId === s.sessionId ? "bg-brand-500/8 border border-brand-500/20" : ""
-                      }`}
-                    >
-                      <p className={`text-xs font-medium truncate transition-colors ${
-                        session?.sessionId === s.sessionId
-                          ? "text-brand-500"
-                          : "text-[var(--text-primary)] group-hover:text-brand-500"
-                      }`}>
+            {/* Nav */}
+            <nav className="px-3 space-y-0.5 shrink-0">
+              <NavItem icon={<PlusCircleIcon />} label="New analysis" onClick={() => navigate("/chat")} circle />
+              <NavItem icon={<SearchIcon />}     label="Search"       onClick={() => {}} />
+              <NavItem icon={<ChatsIcon />}      label="Chats"        onClick={() => {}} />
+              <NavItem icon={<ReportsIcon />}    label="Reports"      onClick={() => {}} />
+            </nav>
+
+            {/* Recents */}
+            {sessions.length > 0 && (
+              <div className="mt-5 px-5 min-h-0 flex flex-col overflow-hidden">
+                <p className="text-[13px] shrink-0 mb-2" style={{ color: T.textMut }}>Recents</p>
+                <div className="flex flex-col gap-0.5 overflow-y-auto">
+                  {sessions.slice(0, 12).map((s) => {
+                    const active = session?.sessionId === s.sessionId;
+                    return (
+                      <button
+                        key={s.sessionId}
+                        onClick={() => openSession(s)}
+                        className="text-left px-1 py-1.5 rounded-md truncate transition-colors text-[14px] hover:text-white/70"
+                        style={{ color: active ? "rgba(255,255,255,0.85)" : T.textSec }}
+                      >
                         {s.filename}
-                      </p>
-                      <p className="text-xs text-[var(--text-muted)] mt-0.5">
-                        {s.rows.toLocaleString()} rows · {formatDate(s.createdAt)}
-                      </p>
-                    </button>
-                  ))
-                )}
-              </SidebarSection>
-
-              {/* View section */}
-              <div className="border-t border-[var(--border)] mt-auto">
-                <div className="px-3 py-3">
-                  <p className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-2 px-1">
-                    View
-                  </p>
-                  {session ? (
-                    <button
-                      onClick={() => navigate(`/dashboard/${session.sessionId}`)}
-                      className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-brand-500/10 border border-brand-500/20 text-brand-600 dark:text-brand-400 text-xs font-medium hover:bg-brand-500/15 transition-colors"
-                    >
-                      <ViewIcon />
-                      <span>Open full analysis view</span>
-                      <svg className="w-3 h-3 ml-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                      </svg>
-                    </button>
-                  ) : (
-                    <p className="text-xs text-[var(--text-muted)] italic px-1">
-                      Upload a file to access the analysis view.
-                    </p>
-                  )}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
+            )}
+
+            {/* Bottom pinned */}
+            <div className="mt-auto shrink-0" style={{ borderTop: `1px solid ${T.border}` }}>
+              <button
+                onClick={() => session ? navigate(`/dashboard/${session.sessionId}`) : navigate("/chat")}
+                className="w-full flex items-center gap-2.5 px-5 py-3.5 transition-colors text-[15px] font-medium"
+                style={{ color: T.teal }}
+                onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = T.tealHover)}
+                onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = T.teal)}
+              >
+                <BarChartIcon />
+                Full Analysis View
+              </button>
+              <div className="px-3 pb-3">
+                <button
+                  onClick={toggleTheme}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg w-full transition-colors text-[14px]"
+                  style={{ color: T.textMut }}
+                  onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = T.textSec)}
+                  onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = T.textMut)}
+                >
+                  {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+                  <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
+                </button>
+              </div>
             </div>
-          ) : (
-            /* ── Collapsed sidebar (icon strip) ───────────────────────────── */
-            <div className="flex flex-col items-center py-3 gap-1">
-              <SidebarIconBtn
-                title="Reports"
-                icon={<ReportsIcon />}
-                badge={reports.length}
-                onClick={() => setSidebarOpen(true)}
-              />
-              <SidebarIconBtn
-                title="Chats"
-                icon={<ChatsIcon />}
-                badge={sessions.length}
-                onClick={() => setSidebarOpen(true)}
-              />
+          </div>
+        ) : (
+          /* Collapsed */
+          <div className="flex flex-col items-center py-4 gap-1 h-full">
+            <CollapseToggle onClick={() => setSidebarOpen(true)} style={{ marginBottom: 10 }} />
+            <IconBtn title="New analysis"  icon={<PlusCircleIcon />} onClick={() => navigate("/chat")} />
+            <IconBtn title="Search"        icon={<SearchIcon />}     onClick={() => {}} />
+            <IconBtn title="Chats"         icon={<ChatsIcon />}      onClick={() => setSidebarOpen(true)} />
+            <IconBtn title="Reports"       icon={<ReportsIcon />}    onClick={() => setSidebarOpen(true)} />
+            <div className="mt-auto flex flex-col gap-1 items-center pb-3">
               {session && (
-                <SidebarIconBtn
-                  title="Full analysis view"
-                  icon={<ViewIcon />}
-                  onClick={() => navigate(`/dashboard/${session.sessionId}`)}
-                />
+                <IconBtn title="Full Analysis View" icon={<BarChartIcon />} onClick={() => navigate(`/dashboard/${session.sessionId}`)} teal />
               )}
-              <div className="mt-auto mb-1">
-                <SidebarIconBtn
-                  title="New chat"
-                  icon={<NewChatIcon />}
-                  onClick={() => navigate("/chat")}
-                />
+              <IconBtn
+                title={theme === "dark" ? "Light mode" : "Dark mode"}
+                icon={theme === "dark" ? <SunIcon /> : <MoonIcon />}
+                onClick={toggleTheme}
+              />
+            </div>
+          </div>
+        )}
+      </aside>
+
+      {/* ── Main ──────────────────────────────────────────────────────────── */}
+      <main className="flex-1 flex flex-col min-w-0" style={{ background: T.bg }}>
+
+        {/* Sub-header (only when session active) */}
+        {session && (
+          <div
+            className="shrink-0 flex items-center justify-between px-6 py-3"
+            style={{ borderBottom: `1px solid ${T.border}` }}
+          >
+            <div className="flex items-center gap-3">
+              <span className="text-sm" style={{ color: T.textSec }}>{session.filename}</span>
+              <span
+                className="text-xs px-2.5 py-1 rounded-full font-medium"
+                style={{ background: T.tealTint, color: T.teal, border: `1px solid ${T.tealBorder}` }}
+              >
+                {session.rows.toLocaleString()} rows · {session.cols} cols
+              </span>
+            </div>
+            <button
+              onClick={() => navigate(`/dashboard/${session.sessionId}`)}
+              className="flex items-center gap-1.5 text-sm transition-colors"
+              style={{ color: T.textDim }}
+              onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = T.textSec)}
+              onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = T.textDim)}
+            >
+              <ExportIcon />
+              Export report
+            </button>
+          </div>
+        )}
+
+        {phase === "welcome" && messages.length === 0 ? (
+          <WelcomeState
+            fileInputRef={fileInputRef}
+            pendingFile={pendingFile}
+            setPendingFile={setPendingFile}
+            processFile={processFile}
+            input={input}
+            setInput={setInput}
+            textareaRef={textareaRef}
+            onSend={sendMessage}
+          />
+        ) : (
+          <>
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto">
+              <div className="max-w-3xl mx-auto px-6 py-6 flex flex-col gap-6">
+                {messages.map((msg) => <MessageRow key={msg.id} msg={msg} />)}
+                {phase === "running" &&
+                  (messages.length === 0 ||
+                    (messages.at(-1)?.role === "assistant" &&
+                      (messages.at(-1) as { items: AssistantItem[] }).items.length === 0)) && (
+                    <TypingBubble />
+                  )}
+                <div ref={bottomRef} />
               </div>
             </div>
-          )}
-        </aside>
 
-        {/* ── Main chat area ─────────────────────────────────────────────── */}
-        <main className="flex-1 flex flex-col min-w-0">
-          {phase === "welcome" && messages.length === 0 ? (
-            /* ── Welcome / empty state ────────────────────────────────────── */
-            <WelcomeState
-              fileInputRef={fileInputRef}
-              pendingFile={pendingFile}
-              setPendingFile={setPendingFile}
-              processFile={processFile}
-              input={input}
-              setInput={setInput}
-              textareaRef={textareaRef}
-              onSend={sendMessage}
-            />
-          ) : (
-            /* ── Active chat ──────────────────────────────────────────────── */
-            <>
-              <div className="flex-1 overflow-y-auto">
-                <div className="max-w-3xl mx-auto px-4 py-6 flex flex-col gap-4">
-                  {messages.map((msg) => (
-                    <MessageRow key={msg.id} msg={msg} />
-                  ))}
-                  {phase === "running" &&
-                    (messages.length === 0 ||
-                      (messages.at(-1)?.role === "assistant" &&
-                        (messages.at(-1) as { items: AssistantItem[] }).items.length === 0)) && (
-                      <TypingBubble />
-                    )}
-                  <div ref={bottomRef} />
-                </div>
-              </div>
-
-              <div className="shrink-0 border-t border-[var(--border)] bg-[var(--bg-surface)] px-4 py-3">
-                <div className="max-w-3xl mx-auto">
+            {/* Input area */}
+            <div className="shrink-0 px-6 pb-5 pt-2">
+              <div className="max-w-3xl mx-auto space-y-2">
+                {/* Suggestion chips */}
+                {phase !== "running" && phase !== "uploading" && (
+                  <div className="flex gap-2 flex-wrap">
+                    {SUGGESTION_CHIPS.map((chip) => (
+                      <SuggestionChip key={chip} label={chip} onClick={() => setInput(chip)} />
+                    ))}
+                  </div>
+                )}
+                {/* Input bar */}
+                <div
+                  className="rounded-xl overflow-hidden"
+                  style={{ background: T.surface, border: `1px solid ${T.borderIn}` }}
+                >
                   <ChatInputBar
                     input={input}
                     setInput={setInput}
@@ -691,23 +615,104 @@ export default function ChatPage() {
                     onSend={sendMessage}
                     disabled={phase === "uploading" || phase === "running"}
                     placeholder={
-                      phase === "running"   ? "Analysing…"  :
-                      phase === "uploading" ? "Uploading…"  :
-                      "Ask a follow-up question…"
+                      phase === "running"   ? "Analysing…" :
+                      phase === "uploading" ? "Uploading…" :
+                      "Ask a follow-up…"
                     }
                   />
                 </div>
               </div>
-            </>
-          )}
-        </main>
-      </div>
+            </div>
+          </>
+        )}
+      </main>
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Welcome / empty state
+// Sidebar sub-components
+// ─────────────────────────────────────────────────────────────────────────────
+
+function CollapseToggle({ onClick, style: extraStyle }: { onClick: () => void; style?: React.CSSProperties }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Toggle sidebar"
+      className="shrink-0 flex items-center justify-center transition-opacity hover:opacity-60"
+      style={{
+        width: 28, height: 22, borderRadius: 5,
+        border: "1.5px solid rgba(255,255,255,0.22)",
+        color: "rgba(255,255,255,0.6)",
+        ...extraStyle,
+      }}
+    >
+      <ColumnIcon />
+    </button>
+  );
+}
+
+function NavItem({ icon, label, onClick, circle }: { icon: React.ReactNode; label: string; onClick: () => void; circle?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors group"
+      style={{ color: T.textSec }}
+      onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = "rgba(255,255,255,0.85)")}
+      onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = T.textSec)}
+    >
+      {circle ? (
+        <div
+          className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
+          style={{ border: "1.5px solid rgba(255,255,255,0.2)", color: T.iconClr }}
+        >
+          {icon}
+        </div>
+      ) : (
+        <span className="shrink-0" style={{ color: T.iconClr }}>{icon}</span>
+      )}
+      <span style={{ fontSize: 15 }}>{label}</span>
+    </button>
+  );
+}
+
+function IconBtn({ title, icon, onClick, teal }: { title: string; icon: React.ReactNode; onClick: () => void; teal?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className="w-9 h-9 rounded-lg flex items-center justify-center transition-colors"
+      style={{ color: teal ? T.teal : T.iconClr }}
+      onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = teal ? T.tealHover : T.textSec)}
+      onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = teal ? T.teal : T.iconClr)}
+    >
+      {icon}
+    </button>
+  );
+}
+
+function SuggestionChip({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="px-4 py-1.5 text-sm rounded-full transition-all"
+      style={{ color: T.textMut, border: `1px solid ${T.border}` }}
+      onMouseEnter={(e) => {
+        (e.currentTarget as HTMLElement).style.color = T.teal;
+        (e.currentTarget as HTMLElement).style.border = `1px solid ${T.tealBorder}`;
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as HTMLElement).style.color = T.textMut;
+        (e.currentTarget as HTMLElement).style.border = `1px solid ${T.border}`;
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Welcome state
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface WelcomeStateProps {
@@ -728,68 +733,60 @@ const WELCOME_EXAMPLES = [
   "Run a linear regression and explain the results",
 ];
 
-function WelcomeState({
-  fileInputRef, pendingFile, setPendingFile, processFile,
-  input, setInput, textareaRef, onSend,
-}: WelcomeStateProps) {
+function WelcomeState({ fileInputRef, pendingFile, setPendingFile, processFile, input, setInput, textareaRef, onSend }: WelcomeStateProps) {
   return (
-    <div className="flex-1 flex flex-col items-center justify-center px-4 pb-8">
+    <div className="flex-1 flex flex-col items-center justify-center px-6 pb-8">
       <div className="w-full max-w-2xl flex flex-col items-center gap-8">
-
         <div className="text-center space-y-3">
-          <h2 className="text-3xl font-bold tracking-tight text-[var(--text-primary)]">
+          <h2 className="text-3xl font-bold tracking-tight" style={{ color: T.textPri }}>
             What would you like to analyse?
           </h2>
-          <p className="text-[var(--text-secondary)] text-base leading-relaxed">
+          <p className="text-base leading-relaxed" style={{ color: T.textSec }}>
             Drop a CSV or Excel file and ask anything — correlations, regressions, trends, charts, anomalies.
           </p>
         </div>
 
-        {/* Upload zone + input */}
-        <div className="w-full rounded-2xl border border-dashed border-[var(--border)] bg-[var(--bg-surface)] p-1 transition-all hover:border-brand-400">
+        {/* Upload + input zone */}
+        <div
+          className="w-full rounded-2xl p-1 transition-all"
+          style={{ border: `1px dashed rgba(255,255,255,0.15)`, background: T.surface }}
+        >
           <div
             className="flex items-center gap-3 px-4 pt-4 pb-2 cursor-pointer"
             onClick={() => fileInputRef.current?.click()}
           >
-            <div className="w-8 h-8 rounded-lg bg-brand-500/10 flex items-center justify-center shrink-0">
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: T.tealTint }}>
               <UploadIcon />
             </div>
             <div>
-              <p className="text-sm font-medium text-[var(--text-primary)]">
+              <p className="text-sm font-medium" style={{ color: T.textPri }}>
                 {pendingFile ? pendingFile.name : "Attach a file or drag & drop anywhere"}
               </p>
-              <p className="text-xs text-[var(--text-muted)]">CSV, XLSX, XLS — up to 50 MB</p>
+              <p className="text-xs" style={{ color: T.textMut }}>CSV, XLSX, XLS — up to 50 MB</p>
             </div>
             {pendingFile && (
               <button
-                className="ml-auto text-[var(--text-muted)] hover:text-red-500 transition-colors"
+                className="ml-auto transition-colors"
+                style={{ color: T.textMut }}
                 onClick={(e) => { e.stopPropagation(); setPendingFile(null); }}
-              >
-                ✕
-              </button>
+                onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = "#ef4444")}
+                onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = T.textMut)}
+              >✕</button>
             )}
           </div>
-
-          <div className="mx-4 border-t border-[var(--border-subtle)]" />
-
+          <div style={{ margin: "0 16px", borderTop: `1px solid ${T.border}` }} />
           <ChatInputBar
-            input={input}
-            setInput={setInput}
-            textareaRef={textareaRef}
-            pendingFile={pendingFile}
-            setPendingFile={setPendingFile}
-            fileInputRef={fileInputRef}
-            onSend={onSend}
-            disabled={false}
-            placeholder="Attach a file and describe what you need, or drop a file to get started…"
-            borderless
-            onFileSelect={processFile}
+            input={input} setInput={setInput} textareaRef={textareaRef}
+            pendingFile={pendingFile} setPendingFile={setPendingFile}
+            fileInputRef={fileInputRef} onSend={onSend} disabled={false}
+            placeholder="Attach a file and describe what you need…"
+            borderless onFileSelect={processFile}
           />
         </div>
 
         {/* Example prompts */}
         <div className="w-full space-y-2">
-          <p className="text-xs text-[var(--text-muted)] font-medium uppercase tracking-wider text-center">
+          <p className="text-xs font-medium uppercase tracking-wider text-center" style={{ color: T.textMut }}>
             Try asking
           </p>
           <div className="grid grid-cols-2 gap-2">
@@ -797,7 +794,16 @@ function WelcomeState({
               <button
                 key={ex}
                 onClick={() => setInput(ex)}
-                className="text-left text-sm px-4 py-3 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border)] text-[var(--text-secondary)] hover:border-brand-400 hover:text-[var(--text-primary)] transition-all"
+                className="text-left text-sm px-4 py-3 rounded-xl transition-all"
+                style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.textSec }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLElement).style.borderColor = T.tealBorder;
+                  (e.currentTarget as HTMLElement).style.color = T.textPri;
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLElement).style.borderColor = T.border;
+                  (e.currentTarget as HTMLElement).style.color = T.textSec;
+                }}
               >
                 {ex}
               </button>
@@ -806,94 +812,11 @@ function WelcomeState({
         </div>
       </div>
 
-      {/* Hidden file input */}
       <input
-        ref={fileInputRef}
-        type="file"
-        accept=".csv,.xlsx,.xls"
-        className="hidden"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) setPendingFile(file);
-          e.target.value = "";
-        }}
+        ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" className="hidden"
+        onChange={(e) => { const file = e.target.files?.[0]; if (file) setPendingFile(file); e.target.value = ""; }}
       />
     </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Sidebar section
-// ─────────────────────────────────────────────────────────────────────────────
-
-function SidebarSection({
-  label, icon, open, onToggle, count, extra, children,
-}: {
-  label: string;
-  icon: React.ReactNode;
-  open: boolean;
-  onToggle: () => void;
-  count?: number;
-  extra?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="border-b border-[var(--border)]">
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-[var(--bg-elevated)] transition-colors group"
-      >
-        <span className="text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] transition-colors">
-          {icon}
-        </span>
-        <span className="flex-1 text-left text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider group-hover:text-[var(--text-secondary)] transition-colors">
-          {label}
-        </span>
-        {count !== undefined && count > 0 && (
-          <span className="text-xs text-[var(--text-muted)] bg-[var(--bg-elevated)] px-1.5 py-0.5 rounded-full border border-[var(--border)]">
-            {count}
-          </span>
-        )}
-        {extra && <span onClick={(e) => e.stopPropagation()}>{extra}</span>}
-        <svg
-          className={`w-3.5 h-3.5 text-[var(--text-muted)] transition-transform duration-150 ${open ? "rotate-0" : "-rotate-90"}`}
-          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-
-      {open && (
-        <div className="px-2 pb-2 flex flex-col gap-0.5 max-h-60 overflow-y-auto">
-          {children}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Collapsed sidebar icon button
-function SidebarIconBtn({
-  title, icon, badge, onClick,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  badge?: number;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      title={title}
-      className="relative w-9 h-9 rounded-lg flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] transition-colors"
-    >
-      {icon}
-      {badge !== undefined && badge > 0 && (
-        <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-3.5 rounded-full bg-brand-500 text-white text-[9px] font-bold flex items-center justify-center px-0.5">
-          {badge > 9 ? "9+" : badge}
-        </span>
-      )}
-    </button>
   );
 }
 
@@ -915,39 +838,34 @@ interface ChatInputBarProps {
   onFileSelect?: (file: File) => void;
 }
 
-function ChatInputBar({
-  input, setInput, textareaRef, pendingFile, setPendingFile,
-  fileInputRef, onSend, disabled, placeholder, borderless, onFileSelect,
-}: ChatInputBarProps) {
+function ChatInputBar({ input, setInput, textareaRef, pendingFile, setPendingFile, fileInputRef, onSend, disabled, placeholder, borderless, onFileSelect }: ChatInputBarProps) {
   const autoResize = () => {
     const ta = textareaRef.current;
     if (!ta) return;
     ta.style.height = "auto";
     ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
   };
-
   const handleKey = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!disabled) onSend(); }
   };
-
   const canSend = (input.trim().length > 0 || pendingFile !== null) && !disabled;
 
   return (
-    <div className={`flex items-end gap-2 ${borderless ? "px-3 py-2" : ""}`}>
+    <div className={`flex items-end gap-2 ${borderless ? "px-3 py-2" : "px-3 py-3"}`}>
       {!borderless && (
         <>
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="shrink-0 w-9 h-9 rounded-xl flex items-center justify-center text-[var(--text-muted)] hover:text-brand-500 hover:bg-brand-500/10 transition-colors mb-0.5"
+            className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors mb-0.5"
+            style={{ color: T.iconClr }}
+            onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = T.textSec)}
+            onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = T.iconClr)}
             title="Attach file"
           >
             <PaperclipIcon />
           </button>
           <input
-            ref={fileInputRef}
-            type="file"
-            accept=".csv,.xlsx,.xls"
-            className="hidden"
+            ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
               if (file) { if (onFileSelect) onFileSelect(file); else setPendingFile(file); }
@@ -958,12 +876,13 @@ function ChatInputBar({
       )}
 
       {pendingFile && !borderless && (
-        <div className="shrink-0 flex items-center gap-1.5 bg-brand-500/10 border border-brand-500/30 text-brand-600 dark:text-brand-400 text-xs px-2.5 py-1.5 rounded-lg mb-0.5">
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-          </svg>
+        <div
+          className="shrink-0 flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg mb-0.5"
+          style={{ background: T.tealTint, border: `1px solid ${T.tealBorder}`, color: T.teal }}
+        >
+          <FileIcon />
           <span className="max-w-[120px] truncate">{pendingFile.name}</span>
-          <button onClick={() => setPendingFile(null)} className="ml-1 hover:text-red-500">✕</button>
+          <button onClick={() => setPendingFile(null)} className="ml-1 hover:text-red-400">✕</button>
         </div>
       )}
 
@@ -975,13 +894,17 @@ function ChatInputBar({
         onChange={(e) => { setInput(e.target.value); autoResize(); }}
         onKeyDown={handleKey}
         placeholder={placeholder}
-        className="flex-1 resize-none bg-transparent text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none leading-relaxed py-1.5 max-h-40 disabled:opacity-50"
+        className="flex-1 resize-none bg-transparent text-sm outline-none leading-relaxed py-1.5 max-h-40 disabled:opacity-40"
+        style={{ color: T.textPri }}
       />
 
       <button
         onClick={onSend}
         disabled={!canSend}
-        className="shrink-0 w-9 h-9 rounded-xl flex items-center justify-center bg-brand-500 text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-brand-600 transition-colors mb-0.5"
+        className="shrink-0 w-8 h-8 flex items-center justify-center text-white transition-colors mb-0.5 disabled:opacity-25"
+        style={{ background: T.teal, borderRadius: 7 }}
+        onMouseEnter={(e) => { if (canSend) (e.currentTarget as HTMLElement).style.background = T.tealHover; }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = T.teal; }}
       >
         <SendIcon />
       </button>
@@ -996,9 +919,18 @@ function ChatInputBar({
 function MessageRow({ msg }: { msg: ChatMsg }) {
   if (msg.role === "user") {
     return (
-      <div className="flex justify-end animate-fade-up">
-        <div className="max-w-[75%] bg-brand-500 text-white px-4 py-3 rounded-2xl rounded-br-sm text-sm leading-relaxed">
+      <div className="flex items-start gap-3 justify-end animate-fade-up">
+        <div
+          className="max-w-[75%] px-4 py-3 rounded-2xl rounded-br-sm text-sm leading-relaxed"
+          style={{ background: "rgba(255,255,255,0.05)", color: T.textPri }}
+        >
           {msg.text}
+        </div>
+        <div
+          className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium mt-0.5"
+          style={{ background: "rgba(255,255,255,0.12)", color: T.textPri }}
+        >
+          N
         </div>
       </div>
     );
@@ -1007,23 +939,21 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
   if (msg.role === "file") {
     return (
       <div className="flex justify-end animate-fade-up">
-        <div className="flex items-center gap-2.5 bg-[var(--bg-elevated)] border border-[var(--border)] px-4 py-3 rounded-2xl rounded-br-sm text-sm">
-          <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-            msg.status === "loading" ? "bg-amber-400/10" : msg.status === "error" ? "bg-red-400/10" : "bg-brand-500/10"
-          }`}>
-            {msg.status === "loading" ? (
-              <SpinnerIcon className="text-amber-500" />
-            ) : msg.status === "error" ? (
-              <span className="text-red-500 text-xs">✕</span>
-            ) : (
-              <svg className="w-4 h-4 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-            )}
+        <div
+          className="flex items-center gap-2.5 px-4 py-3 rounded-2xl rounded-br-sm text-sm"
+          style={{ background: "rgba(255,255,255,0.05)", border: `1px solid ${T.border}` }}
+        >
+          <div
+            className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+            style={{ background: msg.status === "loading" ? "rgba(245,158,11,0.1)" : msg.status === "error" ? "rgba(239,68,68,0.1)" : T.tealTint }}
+          >
+            {msg.status === "loading" ? <SpinnerIcon className="text-amber-400" /> :
+             msg.status === "error"   ? <span style={{ color: "#f87171", fontSize: 12 }}>✕</span> :
+             <FileIcon style={{ color: T.teal }} />}
           </div>
           <div>
-            <p className="font-medium text-[var(--text-primary)] text-xs truncate max-w-[200px]">{msg.filename}</p>
-            <p className="text-xs text-[var(--text-muted)]">
+            <p className="font-medium text-xs truncate max-w-[200px]" style={{ color: T.textPri }}>{msg.filename}</p>
+            <p className="text-xs mt-0.5" style={{ color: T.textMut }}>
               {msg.status === "loading" ? "Uploading & analysing…" :
                msg.status === "error"   ? msg.error :
                `${msg.rows.toLocaleString()} rows · ${msg.cols} columns`}
@@ -1035,11 +965,14 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
   }
 
   return (
-    <div className="flex justify-start animate-fade-up">
-      <div className="shrink-0 w-7 h-7 rounded-full bg-brand-500 flex items-center justify-center mr-3 mt-0.5">
-        <span className="text-white text-xs font-bold">DW</span>
+    <div className="flex items-start gap-3 animate-fade-up">
+      <div
+        className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold mt-0.5"
+        style={{ background: T.teal, color: "#fff" }}
+      >
+        DW
       </div>
-      <div className="flex-1 min-w-0 space-y-3">
+      <div className="flex-1 min-w-0 space-y-3 pt-0.5">
         {msg.items.length === 0 && msg.streaming ? (
           <TypingBubble />
         ) : (
@@ -1056,21 +989,21 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
 
 function AssistantItemView({ item }: { item: AssistantItem }) {
   switch (item.kind) {
-    case "tool":
-      return <ToolRow label={item.label} result={item.result} />;
-    case "finding":
-      return <FindingCard headline={item.headline} detail={item.detail} stat={item.stat} />;
-    case "chart":
-      return <ChartCard figure={item.figure} title={item.title} />;
+    case "tool":    return <ToolRow label={item.label} result={item.result} />;
+    case "finding": return <FindingCard headline={item.headline} detail={item.detail} stat={item.stat} />;
+    case "chart":   return <ChartCard figure={item.figure} title={item.title} />;
     case "report":
       return (
-        <div className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-2xl p-5 text-sm text-[var(--text-primary)] leading-relaxed">
+        <div
+          className="rounded-2xl p-5 text-sm leading-relaxed"
+          style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.textPri }}
+        >
           <SimpleMarkdown text={item.markdown} />
         </div>
       );
     case "error":
       return (
-        <div className="bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 rounded-xl px-4 py-3 text-sm">
+        <div className="rounded-xl px-4 py-3 text-sm" style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", color: "#f87171" }}>
           {item.message}
         </div>
       );
@@ -1079,16 +1012,16 @@ function AssistantItemView({ item }: { item: AssistantItem }) {
 
 function ToolRow({ label, result }: { label: string; result?: string }) {
   return (
-    <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
-      <div className="w-1.5 h-1.5 rounded-full bg-brand-500/60 shrink-0" />
+    <div className="flex items-center gap-2 text-xs" style={{ color: T.textMut }}>
+      <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: T.teal, opacity: 0.6 }} />
       <span>{label}</span>
       {result ? (
         <>
-          <span className="text-[var(--border)]">·</span>
-          <span className="text-[var(--text-muted)] truncate max-w-[240px]">{result}</span>
+          <span style={{ color: T.border }}>·</span>
+          <span className="truncate max-w-[240px]" style={{ color: T.textMut }}>{result}</span>
         </>
       ) : (
-        <span className="dot-1 inline-block w-1 h-1 rounded-full bg-brand-500/60" />
+        <span className="dot-1 inline-block w-1 h-1 rounded-full" style={{ background: T.teal, opacity: 0.6 }} />
       )}
     </div>
   );
@@ -1096,17 +1029,15 @@ function ToolRow({ label, result }: { label: string; result?: string }) {
 
 function FindingCard({ headline, detail, stat }: { headline: string; detail: string; stat?: string }) {
   return (
-    <div className="bg-[var(--bg-surface)] border border-brand-500/20 rounded-xl p-4">
+    <div className="rounded-xl p-4" style={{ background: T.surface, border: `1px solid ${T.tealBorder}` }}>
       <div className="flex items-start gap-3">
-        <div className="w-6 h-6 rounded-lg bg-brand-500/10 flex items-center justify-center shrink-0 mt-0.5">
-          <svg className="w-3.5 h-3.5 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-          </svg>
+        <div className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style={{ background: T.tealTint }}>
+          <LightbulbIcon />
         </div>
         <div className="flex-1">
-          <p className="font-semibold text-sm text-[var(--text-primary)]">{headline}</p>
-          {stat && <p className="text-xl font-bold text-brand-500 mt-0.5">{stat}</p>}
-          <p className="text-xs text-[var(--text-secondary)] mt-1 leading-relaxed">{detail}</p>
+          <p className="font-semibold text-sm" style={{ color: T.textPri }}>{headline}</p>
+          {stat && <p className="text-xl font-bold mt-0.5" style={{ color: T.teal }}>{stat}</p>}
+          <p className="text-xs mt-1 leading-relaxed" style={{ color: T.textSec }}>{detail}</p>
         </div>
       </div>
     </div>
@@ -1115,21 +1046,18 @@ function FindingCard({ headline, detail, stat }: { headline: string; detail: str
 
 function ChartCard({ figure, title }: { figure: PlotlyFigure; title: string }) {
   const isEmpty = !figure.data || (figure.data as unknown[]).length === 0;
-
   return (
-    <div className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+    <div className="rounded-2xl overflow-hidden" style={{ background: T.surface, border: `1px solid rgba(255,255,255,0.07)` }}>
       {title && (
         <div className="px-4 pt-3 pb-1 flex items-center gap-2">
-          <div className="w-1 h-4 rounded-full bg-brand-500 shrink-0" />
-          <p className="text-sm font-semibold text-[var(--text-primary)] truncate">{title}</p>
+          <div className="w-1 h-4 rounded-full shrink-0" style={{ background: T.teal }} />
+          <p className="text-sm font-semibold truncate" style={{ color: T.textPri }}>{title}</p>
         </div>
       )}
       {isEmpty ? (
-        <div className="flex flex-col items-center justify-center gap-2 h-32 text-[var(--text-muted)] text-xs px-4">
-          <svg className="w-6 h-6 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
-          </svg>
-          <span className="text-center">Chart not stored (session reloaded) — ask the assistant to regenerate it.</span>
+        <div className="flex flex-col items-center justify-center gap-2 h-32 text-xs px-4" style={{ color: T.textMut }}>
+          <BarChartIcon />
+          <span className="text-center">Chart not stored — ask the assistant to regenerate it.</span>
         </div>
       ) : (
         <Plot
@@ -1138,9 +1066,9 @@ function ChartCard({ figure, title }: { figure: PlotlyFigure; title: string }) {
             ...(figure.layout as Partial<Plotly.Layout>),
             autosize: true,
             margin: { t: title ? 12 : 28, r: 24, b: 48, l: 56 },
-            font: { family: "Inter, sans-serif", size: 11 },
+            font: { family: "Inter, sans-serif", size: 11, color: T.textSec },
             paper_bgcolor: "transparent",
-            plot_bgcolor: "transparent",
+            plot_bgcolor:  "transparent",
             legend: { orientation: "h", y: -0.18, font: { size: 10 } },
           }}
           config={{ displayModeBar: true, displaylogo: false, responsive: true, modeBarButtonsToRemove: ["lasso2d", "select2d", "toImage"] }}
@@ -1153,135 +1081,89 @@ function ChartCard({ figure, title }: { figure: PlotlyFigure; title: string }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Markdown renderer — handles headings, lists, code blocks, bold/italic
+// Markdown renderer
 // ─────────────────────────────────────────────────────────────────────────────
 
 function SimpleMarkdown({ text }: { text: string }) {
   const lines = text.split("\n");
   const nodes: React.ReactNode[] = [];
   let i = 0;
-
   while (i < lines.length) {
     const line = lines[i];
-
-    // Fenced code block
     if (line.startsWith("```")) {
       const lang = line.slice(3).trim();
       const codeLines: string[] = [];
       i++;
-      while (i < lines.length && !lines[i].startsWith("```")) {
-        codeLines.push(lines[i]);
-        i++;
-      }
+      while (i < lines.length && !lines[i].startsWith("```")) { codeLines.push(lines[i]); i++; }
       nodes.push(
-        <pre key={i} className="bg-[var(--bg-base)] border border-[var(--border)] rounded-xl p-4 my-3 overflow-x-auto">
-          <code className={`text-xs font-mono text-[var(--text-secondary)] ${lang ? `language-${lang}` : ""}`}>
-            {codeLines.join("\n")}
-          </code>
+        <pre key={i} className="rounded-xl p-4 my-3 overflow-x-auto" style={{ background: T.bg, border: `1px solid ${T.border}` }}>
+          <code className={`text-xs font-mono ${lang ? `language-${lang}` : ""}`} style={{ color: T.textSec }}>{codeLines.join("\n")}</code>
         </pre>
       );
-      i++;
-      continue;
-    }
-
-    // HR
-    if (/^[-*_]{3,}$/.test(line.trim())) {
-      nodes.push(<hr key={i} className="border-[var(--border)] my-4" />);
       i++; continue;
     }
-
-    // Headings
+    if (/^[-*_]{3,}$/.test(line.trim())) {
+      nodes.push(<hr key={i} style={{ borderColor: T.border, margin: "16px 0" }} />);
+      i++; continue;
+    }
     if (line.startsWith("### ")) {
-      nodes.push(<h3 key={i} className="font-semibold text-sm text-[var(--text-primary)] mt-5 mb-1.5">{line.slice(4)}</h3>);
+      nodes.push(<h3 key={i} className="font-semibold text-sm mt-5 mb-1.5" style={{ color: T.textPri }}>{line.slice(4)}</h3>);
       i++; continue;
     }
     if (line.startsWith("## ")) {
-      nodes.push(<h2 key={i} className="font-bold text-base text-brand-500 mt-6 mb-2 pb-1 border-b border-brand-500/20">{line.slice(3)}</h2>);
+      nodes.push(<h2 key={i} className="font-bold text-base mt-6 mb-2 pb-1" style={{ color: T.teal, borderBottom: `1px solid ${T.tealBorder}` }}>{line.slice(3)}</h2>);
       i++; continue;
     }
     if (line.startsWith("# ")) {
-      nodes.push(<h1 key={i} className="font-bold text-lg text-[var(--text-primary)] mt-6 mb-2">{line.slice(2)}</h1>);
+      nodes.push(<h1 key={i} className="font-bold text-lg mt-6 mb-2" style={{ color: T.textPri }}>{line.slice(2)}</h1>);
       i++; continue;
     }
-
-    // Bullet list — collect consecutive bullets
     if (line.startsWith("- ") || line.startsWith("* ")) {
       const items: string[] = [];
-      while (i < lines.length && (lines[i].startsWith("- ") || lines[i].startsWith("* "))) {
-        items.push(lines[i].slice(2));
-        i++;
-      }
+      while (i < lines.length && (lines[i].startsWith("- ") || lines[i].startsWith("* "))) { items.push(lines[i].slice(2)); i++; }
       nodes.push(
         <ul key={i} className="list-disc ml-5 space-y-1 my-2">
-          {items.map((it, j) => (
-            <li key={j} className="text-sm text-[var(--text-secondary)] leading-relaxed">
-              <InlineMd text={it} />
-            </li>
-          ))}
+          {items.map((it, j) => <li key={j} className="text-sm leading-relaxed" style={{ color: T.textSec }}><InlineMd text={it} /></li>)}
         </ul>
       );
       continue;
     }
-
-    // Numbered list — collect consecutive numbered items
     if (/^\d+\.\s/.test(line)) {
       const items: string[] = [];
-      while (i < lines.length && /^\d+\.\s/.test(lines[i])) {
-        items.push(lines[i].replace(/^\d+\.\s/, ""));
-        i++;
-      }
+      while (i < lines.length && /^\d+\.\s/.test(lines[i])) { items.push(lines[i].replace(/^\d+\.\s/, "")); i++; }
       nodes.push(
         <ol key={i} className="list-decimal ml-5 space-y-1 my-2">
-          {items.map((it, j) => (
-            <li key={j} className="text-sm text-[var(--text-secondary)] leading-relaxed">
-              <InlineMd text={it} />
-            </li>
-          ))}
+          {items.map((it, j) => <li key={j} className="text-sm leading-relaxed" style={{ color: T.textSec }}><InlineMd text={it} /></li>)}
         </ol>
       );
       continue;
     }
-
-    // Blockquote
     if (line.startsWith("> ")) {
       nodes.push(
-        <blockquote key={i} className="border-l-2 border-brand-500/40 pl-3 my-2 text-sm text-[var(--text-secondary)] italic">
+        <blockquote key={i} className="pl-3 my-2 text-sm italic" style={{ borderLeft: `2px solid ${T.tealBorder}`, color: T.textSec }}>
           <InlineMd text={line.slice(2)} />
         </blockquote>
       );
       i++; continue;
     }
-
-    // Blank line
-    if (line.trim() === "") {
-      nodes.push(<div key={i} className="h-1.5" />);
-      i++; continue;
-    }
-
-    // Regular paragraph
-    nodes.push(
-      <p key={i} className="text-sm text-[var(--text-primary)] leading-relaxed">
-        <InlineMd text={line} />
-      </p>
-    );
+    if (line.trim() === "") { nodes.push(<div key={i} className="h-1.5" />); i++; continue; }
+    nodes.push(<p key={i} className="text-sm leading-relaxed" style={{ color: T.textPri }}><InlineMd text={line} /></p>);
     i++;
   }
-
   return <>{nodes}</>;
 }
 
 function InlineMd({ text }: { text: string }) {
-  // Split on bold (**text**), italic (*text*), and inline code (`code`)
   const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g);
   return (
     <>
       {parts.map((part, i) => {
         if (part.startsWith("**") && part.endsWith("**"))
-          return <strong key={i} className="font-semibold text-[var(--text-primary)]">{part.slice(2, -2)}</strong>;
+          return <strong key={i} style={{ color: T.textPri, fontWeight: 600 }}>{part.slice(2, -2)}</strong>;
         if (part.startsWith("*") && part.endsWith("*") && part.length > 2)
-          return <em key={i} className="italic text-[var(--text-secondary)]">{part.slice(1, -1)}</em>;
+          return <em key={i} style={{ color: T.textSec }}>{part.slice(1, -1)}</em>;
         if (part.startsWith("`") && part.endsWith("`"))
-          return <code key={i} className="font-mono text-xs bg-[var(--bg-elevated)] border border-[var(--border)] px-1 py-0.5 rounded text-brand-500">{part.slice(1, -1)}</code>;
+          return <code key={i} className="font-mono text-xs px-1 py-0.5 rounded" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.teal }}>{part.slice(1, -1)}</code>;
         return <span key={i}>{part}</span>;
       })}
     </>
@@ -1294,18 +1176,30 @@ function InlineMd({ text }: { text: string }) {
 
 function SheetPicker({ sheets, onPick, onDismiss }: { sheets: string[]; onPick: (s: string) => void; onDismiss: () => void }) {
   return (
-    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-2xl p-6 w-full max-w-sm shadow-2xl">
-        <h3 className="font-semibold text-[var(--text-primary)] mb-1">Multiple sheets found</h3>
-        <p className="text-sm text-[var(--text-secondary)] mb-4">Which sheet would you like to analyse?</p>
+    <div className="absolute inset-0 z-40 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.6)" }}>
+      <div className="rounded-2xl p-6 w-full max-w-sm shadow-2xl" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+        <h3 className="font-semibold mb-1" style={{ color: T.textPri }}>Multiple sheets found</h3>
+        <p className="text-sm mb-4" style={{ color: T.textSec }}>Which sheet would you like to analyse?</p>
         <div className="flex flex-col gap-2">
           {sheets.map((s) => (
-            <button key={s} onClick={() => onPick(s)} className="w-full text-left px-4 py-3 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border)] text-sm text-[var(--text-primary)] hover:border-brand-400 hover:bg-brand-500/5 transition-all">
+            <button
+              key={s} onClick={() => onPick(s)}
+              className="w-full text-left px-4 py-3 rounded-xl text-sm transition-all"
+              style={{ background: T.bg, border: `1px solid ${T.border}`, color: T.textPri }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = T.tealBorder; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = T.border; }}
+            >
               {s}
             </button>
           ))}
         </div>
-        <button onClick={onDismiss} className="mt-3 w-full text-center text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors">
+        <button
+          onClick={onDismiss}
+          className="mt-3 w-full text-center text-sm transition-colors"
+          style={{ color: T.textMut }}
+          onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = T.textPri)}
+          onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = T.textMut)}
+        >
           Cancel
         </button>
       </div>
@@ -1314,40 +1208,23 @@ function SheetPicker({ sheets, onPick, onDismiss }: { sheets: string[]; onPick: 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Misc small components
+// Misc
 // ─────────────────────────────────────────────────────────────────────────────
 
 function TypingBubble() {
   return (
     <div className="flex items-center gap-1 px-1 py-1">
-      <span className="dot-1 inline-block w-2 h-2 rounded-full bg-[var(--text-muted)]" />
-      <span className="dot-2 inline-block w-2 h-2 rounded-full bg-[var(--text-muted)]" />
-      <span className="dot-3 inline-block w-2 h-2 rounded-full bg-[var(--text-muted)]" />
+      <span className="dot-1 inline-block w-2 h-2 rounded-full" style={{ background: T.textMut }} />
+      <span className="dot-2 inline-block w-2 h-2 rounded-full" style={{ background: T.textMut }} />
+      <span className="dot-3 inline-block w-2 h-2 rounded-full" style={{ background: T.textMut }} />
     </div>
   );
 }
 
-function ThemeToggle({ theme, toggle }: { theme: string; toggle: () => void }) {
-  return (
-    <button
-      onClick={toggle}
-      className="w-9 h-9 rounded-xl flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] transition-colors"
-      title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-    >
-      {theme === "dark" ? <SunIcon /> : <MoonIcon />}
-    </button>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Date helper
-// ─────────────────────────────────────────────────────────────────────────────
-
 function formatDate(iso: string): string {
-  const d   = new Date(iso);
+  const d = new Date(iso);
   const now = new Date();
-  const diffMs   = now.getTime() - d.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
+  const diffMins = Math.floor((now.getTime() - d.getTime()) / 60000);
   if (diffMins < 1)  return "Just now";
   if (diffMins < 60) return `${diffMins}m ago`;
   const diffHrs = Math.floor(diffMins / 60);
@@ -1358,26 +1235,35 @@ function formatDate(iso: string): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+const _formatDate = formatDate;
+void _formatDate;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Icons
 // ─────────────────────────────────────────────────────────────────────────────
 
-function SidebarToggleIcon({ open }: { open: boolean }) {
-  return open ? (
-    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
-    </svg>
-  ) : (
-    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+function ColumnIcon() {
+  return (
+    <svg width="16" height="12" viewBox="0 0 20 14" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+      <rect x="0.8" y="0.8" width="18.4" height="12.4" rx="2" />
+      <line x1="6.5" y1="0.8" x2="6.5" y2="13.2" />
     </svg>
   );
 }
 
-function ReportsIcon() {
+function PlusCircleIcon() {
+  return (
+    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+    </svg>
+  );
+}
+
+function SearchIcon() {
   return (
     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+      <circle cx="11" cy="11" r="8" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35" />
     </svg>
   );
 }
@@ -1390,19 +1276,18 @@ function ChatsIcon() {
   );
 }
 
-function ViewIcon() {
+function ReportsIcon() {
   return (
     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
     </svg>
   );
 }
 
-function NewChatIcon() {
+function BarChartIcon() {
   return (
-    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
     </svg>
   );
 }
@@ -1425,8 +1310,32 @@ function SendIcon() {
 
 function UploadIcon() {
   return (
-    <svg className="w-4 h-4 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} style={{ color: T.teal }}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+    </svg>
+  );
+}
+
+function FileIcon({ style }: { style?: React.CSSProperties }) {
+  return (
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} style={style}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+    </svg>
+  );
+}
+
+function LightbulbIcon() {
+  return (
+    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} style={{ color: T.teal }}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+    </svg>
+  );
+}
+
+function ExportIcon() {
+  return (
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
     </svg>
   );
 }
