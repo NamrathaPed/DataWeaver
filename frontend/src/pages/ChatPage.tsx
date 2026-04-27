@@ -3,6 +3,8 @@ import {
   useRef,
   useCallback,
   useEffect,
+  createContext,
+  useContext,
   type RefObject,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
@@ -154,23 +156,44 @@ const SUGGESTION_CHIPS = [
   "Generate a report",
 ];
 
-// Design tokens
+// Design tokens — dark
 const T = {
-  bg:        "#0D0F0F",
-  sidebar:   "#111313",
-  surface:   "#141616",
-  teal:      "#1D9694",
-  tealHover: "#22ADAB",
-  tealTint:  "rgba(29,150,148,0.1)",
-  tealBorder:"rgba(29,150,148,0.2)",
+  bg:        "#0c0809",
+  sidebar:   "#110d0e",
+  surface:   "#160f11",
+  teal:      "#9E6975",
+  tealHover: "#b07a88",
+  tealTint:  "rgba(158,105,117,0.1)",
+  tealBorder:"rgba(158,105,117,0.2)",
   border:    "rgba(255,255,255,0.06)",
   borderIn:  "rgba(255,255,255,0.1)",
-  textPri:   "#ffffff",
-  textSec:   "rgba(255,255,255,0.55)",
-  textMut:   "rgba(255,255,255,0.3)",
-  textDim:   "rgba(255,255,255,0.2)",
-  iconClr:   "rgba(255,255,255,0.45)",
+  textPri:   "#f5ede8",
+  textSec:   "rgba(245,237,232,0.55)",
+  textMut:   "rgba(245,237,232,0.3)",
+  textDim:   "rgba(245,237,232,0.2)",
+  iconClr:   "rgba(245,237,232,0.45)",
 };
+
+// Design tokens — light
+const TL = {
+  bg:        "#faf7f8",
+  sidebar:   "#ffffff",
+  surface:   "#f5f0f2",
+  teal:      "#9E6975",
+  tealHover: "#8a5a65",
+  tealTint:  "rgba(158,105,117,0.08)",
+  tealBorder:"rgba(158,105,117,0.18)",
+  border:    "rgba(107,78,90,0.1)",
+  borderIn:  "rgba(107,78,90,0.15)",
+  textPri:   "#1a0f14",
+  textSec:   "rgba(26,15,20,0.6)",
+  textMut:   "rgba(26,15,20,0.38)",
+  textDim:   "rgba(26,15,20,0.22)",
+  iconClr:   "rgba(26,15,20,0.45)",
+};
+
+const TokenCtx = createContext(T);
+const useTokens = () => useContext(TokenCtx);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Page component
@@ -180,6 +203,7 @@ export default function ChatPage() {
   const navigate = useNavigate();
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
   const { theme, toggle: toggleTheme } = useTheme();
+  const t = theme === "dark" ? T : TL;
 
   const [phase,        setPhase]        = useState<Phase>(urlSessionId ? "ready" : "welcome");
   const [session,      setSession]      = useState<SessionInfo | null>(null);
@@ -367,12 +391,13 @@ export default function ChatPage() {
       return;
     }
     const text = input.trim();
-    if (!text || !session) return;
+    const sid = session?.sessionId ?? urlSessionId;
+    if (!text || !sid) return;
     setMessages((p) => [...p, { id: `u-${Date.now()}`, role: "user", text }]);
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-    runAgent(session.sessionId, text);
-  }, [phase, pendingFile, input, session, processFile, runAgent]);
+    runAgent(sid, text);
+  }, [phase, pendingFile, input, session, urlSessionId, processFile, runAgent]);
 
   const onDrop = useCallback((files: File[]) => { if (files[0]) processFile(files[0]); }, [processFile]);
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -399,10 +424,11 @@ export default function ChatPage() {
   // ─────────────────────────────────────────────────────────────────────────
 
   return (
+    <TokenCtx.Provider value={t}>
     <div
       {...getRootProps()}
       className="h-screen flex relative overflow-hidden"
-      style={{ background: T.bg }}
+      style={{ background: t.bg }}
     >
       <input {...getInputProps()} />
 
@@ -410,12 +436,12 @@ export default function ChatPage() {
       {isDragActive && (
         <div
           className="absolute inset-0 z-50 pointer-events-none flex items-center justify-center"
-          style={{ background: T.tealTint, border: `2px dashed ${T.teal}` }}
+          style={{ background: t.tealTint, border: `2px dashed ${t.teal}` }}
         >
           <div className="text-center space-y-2">
             <div className="text-5xl">📂</div>
-            <p className="font-semibold text-lg" style={{ color: T.teal }}>Drop to upload</p>
-            <p className="text-sm" style={{ color: T.textMut }}>CSV, XLSX, XLS</p>
+            <p className="font-semibold text-lg" style={{ color: t.teal }}>Drop to upload</p>
+            <p className="text-sm" style={{ color: t.textMut }}>CSV, XLSX, XLS</p>
           </div>
         </div>
       )}
@@ -434,8 +460,8 @@ export default function ChatPage() {
         className="shrink-0 flex flex-col transition-all duration-200 ease-in-out overflow-hidden"
         style={{
           width: sidebarOpen ? 240 : 52,
-          background: T.sidebar,
-          borderRight: `1px solid ${T.border}`,
+          background: t.sidebar,
+          borderRight: `1px solid ${t.border}`,
         }}
       >
         {sidebarOpen ? (
@@ -446,9 +472,9 @@ export default function ChatPage() {
               <button
                 onClick={() => navigate("/")}
                 className="leading-none tracking-tight"
-                style={{ fontSize: 22, fontWeight: 500, color: T.textPri }}
+                style={{ fontSize: 22, fontWeight: 500, color: t.textPri }}
               >
-                Data<span style={{ color: T.teal }}>Weaver</span>
+                Data<span style={{ color: t.teal }}>Weaver</span>
               </button>
               <CollapseToggle onClick={() => setSidebarOpen(false)} />
             </div>
@@ -464,7 +490,7 @@ export default function ChatPage() {
             {/* Recents */}
             {sessions.length > 0 && (
               <div className="mt-5 px-5 min-h-0 flex flex-col overflow-hidden">
-                <p className="text-[13px] shrink-0 mb-2" style={{ color: T.textMut }}>Recents</p>
+                <p className="text-[13px] shrink-0 mb-2" style={{ color: t.textMut }}>Recents</p>
                 <div className="flex flex-col gap-0.5 overflow-y-auto">
                   {sessions.slice(0, 12).map((s) => {
                     const active = session?.sessionId === s.sessionId;
@@ -473,7 +499,7 @@ export default function ChatPage() {
                         key={s.sessionId}
                         onClick={() => openSession(s)}
                         className="text-left px-1 py-1.5 rounded-md truncate transition-colors text-[14px] hover:text-white/70"
-                        style={{ color: active ? "rgba(255,255,255,0.85)" : T.textSec }}
+                        style={{ color: active ? "rgba(255,255,255,0.85)" : t.textSec }}
                       >
                         {s.filename}
                       </button>
@@ -484,13 +510,13 @@ export default function ChatPage() {
             )}
 
             {/* Bottom pinned */}
-            <div className="mt-auto shrink-0" style={{ borderTop: `1px solid ${T.border}` }}>
+            <div className="mt-auto shrink-0" style={{ borderTop: `1px solid ${t.border}` }}>
               <button
                 onClick={() => session ? navigate(`/dashboard/${session.sessionId}`) : navigate("/chat")}
-                className="w-full flex items-center gap-2.5 px-5 py-3.5 transition-colors text-[15px] font-medium"
-                style={{ color: T.teal }}
-                onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = T.tealHover)}
-                onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = T.teal)}
+                className="w-full flex items-center gap-2.5 px-5 py-3.5 rounded-xl transition-all text-[15px] font-medium"
+                style={{ background: t.teal, color: theme === "dark" ? t.bg : "#ffffff" }}
+                onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = t.tealHover)}
+                onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = t.teal)}
               >
                 <BarChartIcon />
                 Full Analysis View
@@ -499,9 +525,9 @@ export default function ChatPage() {
                 <button
                   onClick={toggleTheme}
                   className="flex items-center gap-2 px-3 py-2 rounded-lg w-full transition-colors text-[14px]"
-                  style={{ color: T.textMut }}
-                  onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = T.textSec)}
-                  onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = T.textMut)}
+                  style={{ color: t.textMut }}
+                  onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = t.textSec)}
+                  onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = t.textMut)}
                 >
                   {theme === "dark" ? <SunIcon /> : <MoonIcon />}
                   <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
@@ -518,9 +544,16 @@ export default function ChatPage() {
             <IconBtn title="Chats"         icon={<ChatsIcon />}      onClick={() => setSidebarOpen(true)} />
             <IconBtn title="Reports"       icon={<ReportsIcon />}    onClick={() => setSidebarOpen(true)} />
             <div className="mt-auto flex flex-col gap-1 items-center pb-3">
-              {session && (
-                <IconBtn title="Full Analysis View" icon={<BarChartIcon />} onClick={() => navigate(`/dashboard/${session.sessionId}`)} teal />
-              )}
+              <button
+                onClick={() => session ? navigate(`/dashboard/${session.sessionId}`) : navigate("/chat")}
+                title="Full Analysis View"
+                className="w-9 h-9 rounded-lg flex items-center justify-center transition-all"
+                style={{ background: t.teal, color: theme === "dark" ? t.bg : "#ffffff" }}
+                onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = t.tealHover)}
+                onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = t.teal)}
+              >
+                <BarChartIcon />
+              </button>
               <IconBtn
                 title={theme === "dark" ? "Light mode" : "Dark mode"}
                 icon={theme === "dark" ? <SunIcon /> : <MoonIcon />}
@@ -532,19 +565,19 @@ export default function ChatPage() {
       </aside>
 
       {/* ── Main ──────────────────────────────────────────────────────────── */}
-      <main className="flex-1 flex flex-col min-w-0" style={{ background: T.bg }}>
+      <main className="flex-1 flex flex-col min-w-0" style={{ background: t.bg }}>
 
         {/* Sub-header (only when session active) */}
         {session && (
           <div
             className="shrink-0 flex items-center justify-between px-6 py-3"
-            style={{ borderBottom: `1px solid ${T.border}` }}
+            style={{ borderBottom: `1px solid ${t.border}` }}
           >
             <div className="flex items-center gap-3">
-              <span className="text-sm" style={{ color: T.textSec }}>{session.filename}</span>
+              <span className="text-sm" style={{ color: t.textSec }}>{session.filename}</span>
               <span
                 className="text-xs px-2.5 py-1 rounded-full font-medium"
-                style={{ background: T.tealTint, color: T.teal, border: `1px solid ${T.tealBorder}` }}
+                style={{ background: t.tealTint, color: t.teal, border: `1px solid ${t.tealBorder}` }}
               >
                 {session.rows.toLocaleString()} rows · {session.cols} cols
               </span>
@@ -552,9 +585,9 @@ export default function ChatPage() {
             <button
               onClick={() => navigate(`/dashboard/${session.sessionId}`)}
               className="flex items-center gap-1.5 text-sm transition-colors"
-              style={{ color: T.textDim }}
-              onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = T.textSec)}
-              onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = T.textDim)}
+              style={{ color: t.textDim }}
+              onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = t.textSec)}
+              onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = t.textDim)}
             >
               <ExportIcon />
               Export report
@@ -579,12 +612,6 @@ export default function ChatPage() {
             <div className="flex-1 overflow-y-auto">
               <div className="max-w-3xl mx-auto px-6 py-6 flex flex-col gap-6">
                 {messages.map((msg) => <MessageRow key={msg.id} msg={msg} />)}
-                {phase === "running" &&
-                  (messages.length === 0 ||
-                    (messages.at(-1)?.role === "assistant" &&
-                      (messages.at(-1) as { items: AssistantItem[] }).items.length === 0)) && (
-                    <TypingBubble />
-                  )}
                 <div ref={bottomRef} />
               </div>
             </div>
@@ -603,7 +630,7 @@ export default function ChatPage() {
                 {/* Input bar */}
                 <div
                   className="rounded-xl overflow-hidden"
-                  style={{ background: T.surface, border: `1px solid ${T.borderIn}` }}
+                  style={{ background: t.surface, border: `1px solid ${t.borderIn}` }}
                 >
                   <ChatInputBar
                     input={input}
@@ -627,6 +654,7 @@ export default function ChatPage() {
         )}
       </main>
     </div>
+    </TokenCtx.Provider>
   );
 }
 
@@ -653,23 +681,24 @@ function CollapseToggle({ onClick, style: extraStyle }: { onClick: () => void; s
 }
 
 function NavItem({ icon, label, onClick, circle }: { icon: React.ReactNode; label: string; onClick: () => void; circle?: boolean }) {
+  const t = useTokens();
   return (
     <button
       onClick={onClick}
       className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors group"
-      style={{ color: T.textSec }}
+      style={{ color: t.textSec }}
       onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = "rgba(255,255,255,0.85)")}
-      onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = T.textSec)}
+      onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = t.textSec)}
     >
       {circle ? (
         <div
           className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
-          style={{ border: "1.5px solid rgba(255,255,255,0.2)", color: T.iconClr }}
+          style={{ border: "1.5px solid rgba(255,255,255,0.2)", color: t.iconClr }}
         >
           {icon}
         </div>
       ) : (
-        <span className="shrink-0" style={{ color: T.iconClr }}>{icon}</span>
+        <span className="shrink-0" style={{ color: t.iconClr }}>{icon}</span>
       )}
       <span style={{ fontSize: 15 }}>{label}</span>
     </button>
@@ -677,14 +706,15 @@ function NavItem({ icon, label, onClick, circle }: { icon: React.ReactNode; labe
 }
 
 function IconBtn({ title, icon, onClick, teal }: { title: string; icon: React.ReactNode; onClick: () => void; teal?: boolean }) {
+  const t = useTokens();
   return (
     <button
       onClick={onClick}
       title={title}
       className="w-9 h-9 rounded-lg flex items-center justify-center transition-colors"
-      style={{ color: teal ? T.teal : T.iconClr }}
-      onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = teal ? T.tealHover : T.textSec)}
-      onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = teal ? T.teal : T.iconClr)}
+      style={{ color: teal ? t.teal : t.iconClr }}
+      onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = teal ? t.tealHover : t.textSec)}
+      onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = teal ? t.teal : t.iconClr)}
     >
       {icon}
     </button>
@@ -692,18 +722,19 @@ function IconBtn({ title, icon, onClick, teal }: { title: string; icon: React.Re
 }
 
 function SuggestionChip({ label, onClick }: { label: string; onClick: () => void }) {
+  const t = useTokens();
   return (
     <button
       onClick={onClick}
       className="px-4 py-1.5 text-sm rounded-full transition-all"
-      style={{ color: T.textMut, border: `1px solid ${T.border}` }}
+      style={{ color: t.textMut, border: `1px solid ${t.border}` }}
       onMouseEnter={(e) => {
-        (e.currentTarget as HTMLElement).style.color = T.teal;
-        (e.currentTarget as HTMLElement).style.border = `1px solid ${T.tealBorder}`;
+        (e.currentTarget as HTMLElement).style.color = t.teal;
+        (e.currentTarget as HTMLElement).style.border = `1px solid ${t.tealBorder}`;
       }}
       onMouseLeave={(e) => {
-        (e.currentTarget as HTMLElement).style.color = T.textMut;
-        (e.currentTarget as HTMLElement).style.border = `1px solid ${T.border}`;
+        (e.currentTarget as HTMLElement).style.color = t.textMut;
+        (e.currentTarget as HTMLElement).style.border = `1px solid ${t.border}`;
       }}
     >
       {label}
@@ -734,14 +765,15 @@ const WELCOME_EXAMPLES = [
 ];
 
 function WelcomeState({ fileInputRef, pendingFile, setPendingFile, processFile, input, setInput, textareaRef, onSend }: WelcomeStateProps) {
+  const t = useTokens();
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 pb-8">
       <div className="w-full max-w-2xl flex flex-col items-center gap-8">
         <div className="text-center space-y-3">
-          <h2 className="text-3xl font-bold tracking-tight" style={{ color: T.textPri }}>
+          <h2 className="text-3xl font-bold tracking-tight" style={{ color: t.textPri }}>
             What would you like to analyse?
           </h2>
-          <p className="text-base leading-relaxed" style={{ color: T.textSec }}>
+          <p className="text-base leading-relaxed" style={{ color: t.textSec }}>
             Drop a CSV or Excel file and ask anything — correlations, regressions, trends, charts, anomalies.
           </p>
         </div>
@@ -749,32 +781,32 @@ function WelcomeState({ fileInputRef, pendingFile, setPendingFile, processFile, 
         {/* Upload + input zone */}
         <div
           className="w-full rounded-2xl p-1 transition-all"
-          style={{ border: `1px dashed rgba(255,255,255,0.15)`, background: T.surface }}
+          style={{ border: `1px dashed rgba(255,255,255,0.15)`, background: t.surface }}
         >
           <div
             className="flex items-center gap-3 px-4 pt-4 pb-2 cursor-pointer"
             onClick={() => fileInputRef.current?.click()}
           >
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: T.tealTint }}>
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: t.tealTint }}>
               <UploadIcon />
             </div>
             <div>
-              <p className="text-sm font-medium" style={{ color: T.textPri }}>
+              <p className="text-sm font-medium" style={{ color: t.textPri }}>
                 {pendingFile ? pendingFile.name : "Attach a file or drag & drop anywhere"}
               </p>
-              <p className="text-xs" style={{ color: T.textMut }}>CSV, XLSX, XLS — up to 50 MB</p>
+              <p className="text-xs" style={{ color: t.textMut }}>CSV, XLSX, XLS — up to 50 MB</p>
             </div>
             {pendingFile && (
               <button
                 className="ml-auto transition-colors"
-                style={{ color: T.textMut }}
+                style={{ color: t.textMut }}
                 onClick={(e) => { e.stopPropagation(); setPendingFile(null); }}
                 onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = "#ef4444")}
-                onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = T.textMut)}
+                onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = t.textMut)}
               >✕</button>
             )}
           </div>
-          <div style={{ margin: "0 16px", borderTop: `1px solid ${T.border}` }} />
+          <div style={{ margin: "0 16px", borderTop: `1px solid ${t.border}` }} />
           <ChatInputBar
             input={input} setInput={setInput} textareaRef={textareaRef}
             pendingFile={pendingFile} setPendingFile={setPendingFile}
@@ -786,7 +818,7 @@ function WelcomeState({ fileInputRef, pendingFile, setPendingFile, processFile, 
 
         {/* Example prompts */}
         <div className="w-full space-y-2">
-          <p className="text-xs font-medium uppercase tracking-wider text-center" style={{ color: T.textMut }}>
+          <p className="text-xs font-medium uppercase tracking-wider text-center" style={{ color: t.textMut }}>
             Try asking
           </p>
           <div className="grid grid-cols-2 gap-2">
@@ -795,14 +827,14 @@ function WelcomeState({ fileInputRef, pendingFile, setPendingFile, processFile, 
                 key={ex}
                 onClick={() => setInput(ex)}
                 className="text-left text-sm px-4 py-3 rounded-xl transition-all"
-                style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.textSec }}
+                style={{ background: t.surface, border: `1px solid ${t.border}`, color: t.textSec }}
                 onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLElement).style.borderColor = T.tealBorder;
-                  (e.currentTarget as HTMLElement).style.color = T.textPri;
+                  (e.currentTarget as HTMLElement).style.borderColor = t.tealBorder;
+                  (e.currentTarget as HTMLElement).style.color = t.textPri;
                 }}
                 onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLElement).style.borderColor = T.border;
-                  (e.currentTarget as HTMLElement).style.color = T.textSec;
+                  (e.currentTarget as HTMLElement).style.borderColor = t.border;
+                  (e.currentTarget as HTMLElement).style.color = t.textSec;
                 }}
               >
                 {ex}
@@ -839,6 +871,7 @@ interface ChatInputBarProps {
 }
 
 function ChatInputBar({ input, setInput, textareaRef, pendingFile, setPendingFile, fileInputRef, onSend, disabled, placeholder, borderless, onFileSelect }: ChatInputBarProps) {
+  const t = useTokens();
   const autoResize = () => {
     const ta = textareaRef.current;
     if (!ta) return;
@@ -857,9 +890,9 @@ function ChatInputBar({ input, setInput, textareaRef, pendingFile, setPendingFil
           <button
             onClick={() => fileInputRef.current?.click()}
             className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors mb-0.5"
-            style={{ color: T.iconClr }}
-            onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = T.textSec)}
-            onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = T.iconClr)}
+            style={{ color: t.iconClr }}
+            onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = t.textSec)}
+            onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = t.iconClr)}
             title="Attach file"
           >
             <PaperclipIcon />
@@ -878,7 +911,7 @@ function ChatInputBar({ input, setInput, textareaRef, pendingFile, setPendingFil
       {pendingFile && !borderless && (
         <div
           className="shrink-0 flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg mb-0.5"
-          style={{ background: T.tealTint, border: `1px solid ${T.tealBorder}`, color: T.teal }}
+          style={{ background: t.tealTint, border: `1px solid ${t.tealBorder}`, color: t.teal }}
         >
           <FileIcon />
           <span className="max-w-[120px] truncate">{pendingFile.name}</span>
@@ -895,16 +928,16 @@ function ChatInputBar({ input, setInput, textareaRef, pendingFile, setPendingFil
         onKeyDown={handleKey}
         placeholder={placeholder}
         className="flex-1 resize-none bg-transparent text-sm outline-none leading-relaxed py-1.5 max-h-40 disabled:opacity-40"
-        style={{ color: T.textPri }}
+        style={{ color: t.textPri }}
       />
 
       <button
         onClick={onSend}
         disabled={!canSend}
         className="shrink-0 w-8 h-8 flex items-center justify-center text-white transition-colors mb-0.5 disabled:opacity-25"
-        style={{ background: T.teal, borderRadius: 7 }}
-        onMouseEnter={(e) => { if (canSend) (e.currentTarget as HTMLElement).style.background = T.tealHover; }}
-        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = T.teal; }}
+        style={{ background: t.teal, borderRadius: 7 }}
+        onMouseEnter={(e) => { if (canSend) (e.currentTarget as HTMLElement).style.background = t.tealHover; }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = t.teal; }}
       >
         <SendIcon />
       </button>
@@ -917,18 +950,19 @@ function ChatInputBar({ input, setInput, textareaRef, pendingFile, setPendingFil
 // ─────────────────────────────────────────────────────────────────────────────
 
 function MessageRow({ msg }: { msg: ChatMsg }) {
+  const t = useTokens();
   if (msg.role === "user") {
     return (
       <div className="flex items-start gap-3 justify-end animate-fade-up">
         <div
           className="max-w-[75%] px-4 py-3 rounded-2xl rounded-br-sm text-sm leading-relaxed"
-          style={{ background: "rgba(255,255,255,0.05)", color: T.textPri }}
+          style={{ background: "rgba(255,255,255,0.05)", color: t.textPri }}
         >
           {msg.text}
         </div>
         <div
           className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium mt-0.5"
-          style={{ background: "rgba(255,255,255,0.12)", color: T.textPri }}
+          style={{ background: "rgba(255,255,255,0.12)", color: t.textPri }}
         >
           N
         </div>
@@ -941,19 +975,19 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
       <div className="flex justify-end animate-fade-up">
         <div
           className="flex items-center gap-2.5 px-4 py-3 rounded-2xl rounded-br-sm text-sm"
-          style={{ background: "rgba(255,255,255,0.05)", border: `1px solid ${T.border}` }}
+          style={{ background: "rgba(255,255,255,0.05)", border: `1px solid ${t.border}` }}
         >
           <div
             className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
-            style={{ background: msg.status === "loading" ? "rgba(245,158,11,0.1)" : msg.status === "error" ? "rgba(239,68,68,0.1)" : T.tealTint }}
+            style={{ background: msg.status === "loading" ? "rgba(245,158,11,0.1)" : msg.status === "error" ? "rgba(239,68,68,0.1)" : t.tealTint }}
           >
             {msg.status === "loading" ? <SpinnerIcon className="text-amber-400" /> :
              msg.status === "error"   ? <span style={{ color: "#f87171", fontSize: 12 }}>✕</span> :
-             <FileIcon style={{ color: T.teal }} />}
+             <FileIcon style={{ color: t.teal }} />}
           </div>
           <div>
-            <p className="font-medium text-xs truncate max-w-[200px]" style={{ color: T.textPri }}>{msg.filename}</p>
-            <p className="text-xs mt-0.5" style={{ color: T.textMut }}>
+            <p className="font-medium text-xs truncate max-w-[200px]" style={{ color: t.textPri }}>{msg.filename}</p>
+            <p className="text-xs mt-0.5" style={{ color: t.textMut }}>
               {msg.status === "loading" ? "Uploading & analysing…" :
                msg.status === "error"   ? msg.error :
                `${msg.rows.toLocaleString()} rows · ${msg.cols} columns`}
@@ -968,7 +1002,7 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
     <div className="flex items-start gap-3 animate-fade-up">
       <div
         className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold mt-0.5"
-        style={{ background: T.teal, color: "#fff" }}
+        style={{ background: t.teal, color: "#fff" }}
       >
         DW
       </div>
@@ -988,6 +1022,7 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function AssistantItemView({ item }: { item: AssistantItem }) {
+  const t = useTokens();
   switch (item.kind) {
     case "tool":    return <ToolRow label={item.label} result={item.result} />;
     case "finding": return <FindingCard headline={item.headline} detail={item.detail} stat={item.stat} />;
@@ -996,7 +1031,7 @@ function AssistantItemView({ item }: { item: AssistantItem }) {
       return (
         <div
           className="rounded-2xl p-5 text-sm leading-relaxed"
-          style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.textPri }}
+          style={{ background: t.surface, border: `1px solid ${t.border}`, color: t.textPri }}
         >
           <SimpleMarkdown text={item.markdown} />
         </div>
@@ -1011,33 +1046,35 @@ function AssistantItemView({ item }: { item: AssistantItem }) {
 }
 
 function ToolRow({ label, result }: { label: string; result?: string }) {
+  const t = useTokens();
   return (
-    <div className="flex items-center gap-2 text-xs" style={{ color: T.textMut }}>
-      <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: T.teal, opacity: 0.6 }} />
+    <div className="flex items-center gap-2 text-xs" style={{ color: t.textMut }}>
+      <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: t.teal, opacity: 0.6 }} />
       <span>{label}</span>
       {result ? (
         <>
-          <span style={{ color: T.border }}>·</span>
-          <span className="truncate max-w-[240px]" style={{ color: T.textMut }}>{result}</span>
+          <span style={{ color: t.border }}>·</span>
+          <span className="truncate max-w-[240px]" style={{ color: t.textMut }}>{result}</span>
         </>
       ) : (
-        <span className="dot-1 inline-block w-1 h-1 rounded-full" style={{ background: T.teal, opacity: 0.6 }} />
+        <span className="dot-1 inline-block w-1 h-1 rounded-full" style={{ background: t.teal, opacity: 0.6 }} />
       )}
     </div>
   );
 }
 
 function FindingCard({ headline, detail, stat }: { headline: string; detail: string; stat?: string }) {
+  const t = useTokens();
   return (
-    <div className="rounded-xl p-4" style={{ background: T.surface, border: `1px solid ${T.tealBorder}` }}>
+    <div className="rounded-xl p-4" style={{ background: t.surface, border: `1px solid ${t.tealBorder}` }}>
       <div className="flex items-start gap-3">
-        <div className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style={{ background: T.tealTint }}>
+        <div className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style={{ background: t.tealTint }}>
           <LightbulbIcon />
         </div>
         <div className="flex-1">
-          <p className="font-semibold text-sm" style={{ color: T.textPri }}>{headline}</p>
-          {stat && <p className="text-xl font-bold mt-0.5" style={{ color: T.teal }}>{stat}</p>}
-          <p className="text-xs mt-1 leading-relaxed" style={{ color: T.textSec }}>{detail}</p>
+          <p className="font-semibold text-sm" style={{ color: t.textPri }}>{headline}</p>
+          {stat && <p className="text-xl font-bold mt-0.5" style={{ color: t.teal }}>{stat}</p>}
+          <p className="text-xs mt-1 leading-relaxed" style={{ color: t.textSec }}>{detail}</p>
         </div>
       </div>
     </div>
@@ -1045,17 +1082,18 @@ function FindingCard({ headline, detail, stat }: { headline: string; detail: str
 }
 
 function ChartCard({ figure, title }: { figure: PlotlyFigure; title: string }) {
+  const t = useTokens();
   const isEmpty = !figure.data || (figure.data as unknown[]).length === 0;
   return (
-    <div className="rounded-2xl overflow-hidden" style={{ background: T.surface, border: `1px solid rgba(255,255,255,0.07)` }}>
+    <div className="rounded-2xl overflow-hidden" style={{ background: t.surface, border: `1px solid rgba(255,255,255,0.07)` }}>
       {title && (
         <div className="px-4 pt-3 pb-1 flex items-center gap-2">
-          <div className="w-1 h-4 rounded-full shrink-0" style={{ background: T.teal }} />
-          <p className="text-sm font-semibold truncate" style={{ color: T.textPri }}>{title}</p>
+          <div className="w-1 h-4 rounded-full shrink-0" style={{ background: t.teal }} />
+          <p className="text-sm font-semibold truncate" style={{ color: t.textPri }}>{title}</p>
         </div>
       )}
       {isEmpty ? (
-        <div className="flex flex-col items-center justify-center gap-2 h-32 text-xs px-4" style={{ color: T.textMut }}>
+        <div className="flex flex-col items-center justify-center gap-2 h-32 text-xs px-4" style={{ color: t.textMut }}>
           <BarChartIcon />
           <span className="text-center">Chart not stored — ask the assistant to regenerate it.</span>
         </div>
@@ -1066,7 +1104,7 @@ function ChartCard({ figure, title }: { figure: PlotlyFigure; title: string }) {
             ...(figure.layout as Partial<Plotly.Layout>),
             autosize: true,
             margin: { t: title ? 12 : 28, r: 24, b: 48, l: 56 },
-            font: { family: "Inter, sans-serif", size: 11, color: T.textSec },
+            font: { family: "Inter, sans-serif", size: 11, color: t.textSec },
             paper_bgcolor: "transparent",
             plot_bgcolor:  "transparent",
             legend: { orientation: "h", y: -0.18, font: { size: 10 } },
@@ -1085,6 +1123,7 @@ function ChartCard({ figure, title }: { figure: PlotlyFigure; title: string }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function SimpleMarkdown({ text }: { text: string }) {
+  const t = useTokens();
   const lines = text.split("\n");
   const nodes: React.ReactNode[] = [];
   let i = 0;
@@ -1096,26 +1135,26 @@ function SimpleMarkdown({ text }: { text: string }) {
       i++;
       while (i < lines.length && !lines[i].startsWith("```")) { codeLines.push(lines[i]); i++; }
       nodes.push(
-        <pre key={i} className="rounded-xl p-4 my-3 overflow-x-auto" style={{ background: T.bg, border: `1px solid ${T.border}` }}>
-          <code className={`text-xs font-mono ${lang ? `language-${lang}` : ""}`} style={{ color: T.textSec }}>{codeLines.join("\n")}</code>
+        <pre key={i} className="rounded-xl p-4 my-3 overflow-x-auto" style={{ background: t.bg, border: `1px solid ${t.border}` }}>
+          <code className={`text-xs font-mono ${lang ? `language-${lang}` : ""}`} style={{ color: t.textSec }}>{codeLines.join("\n")}</code>
         </pre>
       );
       i++; continue;
     }
     if (/^[-*_]{3,}$/.test(line.trim())) {
-      nodes.push(<hr key={i} style={{ borderColor: T.border, margin: "16px 0" }} />);
+      nodes.push(<hr key={i} style={{ borderColor: t.border, margin: "16px 0" }} />);
       i++; continue;
     }
     if (line.startsWith("### ")) {
-      nodes.push(<h3 key={i} className="font-semibold text-sm mt-5 mb-1.5" style={{ color: T.textPri }}>{line.slice(4)}</h3>);
+      nodes.push(<h3 key={i} className="font-semibold text-sm mt-5 mb-1.5" style={{ color: t.textPri }}>{line.slice(4)}</h3>);
       i++; continue;
     }
     if (line.startsWith("## ")) {
-      nodes.push(<h2 key={i} className="font-bold text-base mt-6 mb-2 pb-1" style={{ color: T.teal, borderBottom: `1px solid ${T.tealBorder}` }}>{line.slice(3)}</h2>);
+      nodes.push(<h2 key={i} className="font-bold text-base mt-6 mb-2 pb-1" style={{ color: t.teal, borderBottom: `1px solid ${t.tealBorder}` }}>{line.slice(3)}</h2>);
       i++; continue;
     }
     if (line.startsWith("# ")) {
-      nodes.push(<h1 key={i} className="font-bold text-lg mt-6 mb-2" style={{ color: T.textPri }}>{line.slice(2)}</h1>);
+      nodes.push(<h1 key={i} className="font-bold text-lg mt-6 mb-2" style={{ color: t.textPri }}>{line.slice(2)}</h1>);
       i++; continue;
     }
     if (line.startsWith("- ") || line.startsWith("* ")) {
@@ -1123,7 +1162,7 @@ function SimpleMarkdown({ text }: { text: string }) {
       while (i < lines.length && (lines[i].startsWith("- ") || lines[i].startsWith("* "))) { items.push(lines[i].slice(2)); i++; }
       nodes.push(
         <ul key={i} className="list-disc ml-5 space-y-1 my-2">
-          {items.map((it, j) => <li key={j} className="text-sm leading-relaxed" style={{ color: T.textSec }}><InlineMd text={it} /></li>)}
+          {items.map((it, j) => <li key={j} className="text-sm leading-relaxed" style={{ color: t.textSec }}><InlineMd text={it} /></li>)}
         </ul>
       );
       continue;
@@ -1133,37 +1172,38 @@ function SimpleMarkdown({ text }: { text: string }) {
       while (i < lines.length && /^\d+\.\s/.test(lines[i])) { items.push(lines[i].replace(/^\d+\.\s/, "")); i++; }
       nodes.push(
         <ol key={i} className="list-decimal ml-5 space-y-1 my-2">
-          {items.map((it, j) => <li key={j} className="text-sm leading-relaxed" style={{ color: T.textSec }}><InlineMd text={it} /></li>)}
+          {items.map((it, j) => <li key={j} className="text-sm leading-relaxed" style={{ color: t.textSec }}><InlineMd text={it} /></li>)}
         </ol>
       );
       continue;
     }
     if (line.startsWith("> ")) {
       nodes.push(
-        <blockquote key={i} className="pl-3 my-2 text-sm italic" style={{ borderLeft: `2px solid ${T.tealBorder}`, color: T.textSec }}>
+        <blockquote key={i} className="pl-3 my-2 text-sm italic" style={{ borderLeft: `2px solid ${t.tealBorder}`, color: t.textSec }}>
           <InlineMd text={line.slice(2)} />
         </blockquote>
       );
       i++; continue;
     }
     if (line.trim() === "") { nodes.push(<div key={i} className="h-1.5" />); i++; continue; }
-    nodes.push(<p key={i} className="text-sm leading-relaxed" style={{ color: T.textPri }}><InlineMd text={line} /></p>);
+    nodes.push(<p key={i} className="text-sm leading-relaxed" style={{ color: t.textPri }}><InlineMd text={line} /></p>);
     i++;
   }
   return <>{nodes}</>;
 }
 
 function InlineMd({ text }: { text: string }) {
+  const t = useTokens();
   const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g);
   return (
     <>
       {parts.map((part, i) => {
         if (part.startsWith("**") && part.endsWith("**"))
-          return <strong key={i} style={{ color: T.textPri, fontWeight: 600 }}>{part.slice(2, -2)}</strong>;
+          return <strong key={i} style={{ color: t.textPri, fontWeight: 600 }}>{part.slice(2, -2)}</strong>;
         if (part.startsWith("*") && part.endsWith("*") && part.length > 2)
-          return <em key={i} style={{ color: T.textSec }}>{part.slice(1, -1)}</em>;
+          return <em key={i} style={{ color: t.textSec }}>{part.slice(1, -1)}</em>;
         if (part.startsWith("`") && part.endsWith("`"))
-          return <code key={i} className="font-mono text-xs px-1 py-0.5 rounded" style={{ background: T.surface, border: `1px solid ${T.border}`, color: T.teal }}>{part.slice(1, -1)}</code>;
+          return <code key={i} className="font-mono text-xs px-1 py-0.5 rounded" style={{ background: t.surface, border: `1px solid ${t.border}`, color: t.teal }}>{part.slice(1, -1)}</code>;
         return <span key={i}>{part}</span>;
       })}
     </>
@@ -1175,19 +1215,20 @@ function InlineMd({ text }: { text: string }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function SheetPicker({ sheets, onPick, onDismiss }: { sheets: string[]; onPick: (s: string) => void; onDismiss: () => void }) {
+  const t = useTokens();
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.6)" }}>
-      <div className="rounded-2xl p-6 w-full max-w-sm shadow-2xl" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
-        <h3 className="font-semibold mb-1" style={{ color: T.textPri }}>Multiple sheets found</h3>
-        <p className="text-sm mb-4" style={{ color: T.textSec }}>Which sheet would you like to analyse?</p>
+      <div className="rounded-2xl p-6 w-full max-w-sm shadow-2xl" style={{ background: t.surface, border: `1px solid ${t.border}` }}>
+        <h3 className="font-semibold mb-1" style={{ color: t.textPri }}>Multiple sheets found</h3>
+        <p className="text-sm mb-4" style={{ color: t.textSec }}>Which sheet would you like to analyse?</p>
         <div className="flex flex-col gap-2">
           {sheets.map((s) => (
             <button
               key={s} onClick={() => onPick(s)}
               className="w-full text-left px-4 py-3 rounded-xl text-sm transition-all"
-              style={{ background: T.bg, border: `1px solid ${T.border}`, color: T.textPri }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = T.tealBorder; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = T.border; }}
+              style={{ background: t.bg, border: `1px solid ${t.border}`, color: t.textPri }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = t.tealBorder; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = t.border; }}
             >
               {s}
             </button>
@@ -1196,9 +1237,9 @@ function SheetPicker({ sheets, onPick, onDismiss }: { sheets: string[]; onPick: 
         <button
           onClick={onDismiss}
           className="mt-3 w-full text-center text-sm transition-colors"
-          style={{ color: T.textMut }}
-          onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = T.textPri)}
-          onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = T.textMut)}
+          style={{ color: t.textMut }}
+          onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = t.textPri)}
+          onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = t.textMut)}
         >
           Cancel
         </button>
@@ -1212,11 +1253,12 @@ function SheetPicker({ sheets, onPick, onDismiss }: { sheets: string[]; onPick: 
 // ─────────────────────────────────────────────────────────────────────────────
 
 function TypingBubble() {
+  const t = useTokens();
   return (
     <div className="flex items-center gap-1 px-1 py-1">
-      <span className="dot-1 inline-block w-2 h-2 rounded-full" style={{ background: T.textMut }} />
-      <span className="dot-2 inline-block w-2 h-2 rounded-full" style={{ background: T.textMut }} />
-      <span className="dot-3 inline-block w-2 h-2 rounded-full" style={{ background: T.textMut }} />
+      <span className="dot-1 inline-block w-2 h-2 rounded-full" style={{ background: t.textMut }} />
+      <span className="dot-2 inline-block w-2 h-2 rounded-full" style={{ background: t.textMut }} />
+      <span className="dot-3 inline-block w-2 h-2 rounded-full" style={{ background: t.textMut }} />
     </div>
   );
 }
@@ -1309,8 +1351,9 @@ function SendIcon() {
 }
 
 function UploadIcon() {
+  const t = useTokens();
   return (
-    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} style={{ color: T.teal }}>
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} style={{ color: t.teal }}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
     </svg>
   );
@@ -1325,8 +1368,9 @@ function FileIcon({ style }: { style?: React.CSSProperties }) {
 }
 
 function LightbulbIcon() {
+  const t = useTokens();
   return (
-    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} style={{ color: T.teal }}>
+    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} style={{ color: t.teal }}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
     </svg>
   );
