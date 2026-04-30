@@ -20,8 +20,21 @@ from utils import supabase_client as sb
 
 router = APIRouter()
 
-# In-memory session store — holds DataFrames for the life of the server process
+# In-memory L1 cache — avoids round-tripping Supabase Storage within the same process
 _session_store: dict[str, dict] = {}
+
+
+def _store_session(sid: str, df, filename: str, extension: str, fhash: str, upload_id=None):
+    """Write session to memory and persist DataFrame + metadata to Supabase."""
+    _session_store[sid] = {
+        "df":        df,
+        "filename":  filename,
+        "extension": extension,
+        "file_hash": fhash,
+        "upload_id": upload_id,
+        "created_at": utc_now_iso(),
+    }
+    sb.upload_dataframe(sid, df, "raw")
 
 
 @router.post("")
@@ -38,22 +51,26 @@ async def upload_file(
 
     # Dedup: if we've seen this exact file before, reuse the session
     existing = sb.get_upload_by_hash(fhash)
-    if existing and existing["session_id"] in _session_store:
+    if existing:
         sid = existing["session_id"]
-        sess = _session_store[sid]
-        df = sess["df"]
-        return {
-            "session_id": sid,
-            "upload_id":  existing["id"],
-            "filename":   existing["filename"],
-            "extension":  existing["extension"],
-            "row_count":  existing["row_count"],
-            "col_count":  existing["col_count"],
-            "size_kb":    existing["size_kb"],
-            "columns":    df.columns.tolist(),
-            "preview":    df_to_json_records(df, max_rows=100),
-            "cached":     True,
-        }
+        # Try to serve from memory or re-load from Supabase Storage
+        try:
+            sess = get_session_df(sid)
+            df = sess["df"]
+            return {
+                "session_id": sid,
+                "upload_id":  existing["id"],
+                "filename":   existing["filename"],
+                "extension":  existing["extension"],
+                "row_count":  existing["row_count"],
+                "col_count":  existing["col_count"],
+                "size_kb":    existing["size_kb"],
+                "columns":    df.columns.tolist(),
+                "preview":    df_to_json_records(df, max_rows=100),
+                "cached":     True,
+            }
+        except ValueError:
+            pass  # file not in storage, fall through to re-parse
 
     def _make_buf(data: bytes, name: str):
         buf = io.BytesIO(data)
@@ -75,16 +92,7 @@ async def upload_file(
     df = result["df"]
 
     sid = session_id or new_session_id()
-    _session_store[sid] = {
-        "df":        df,
-        "filename":  result["filename"],
-        "extension": result["extension"],
-        "file_hash": fhash,
-        "upload_id": None,
-        "created_at": utc_now_iso(),
-    }
 
-    # Persist metadata to Supabase (no file bytes saved)
     upload_id = sb.save_upload_metadata(
         session_id=sid,
         filename=result["filename"],
@@ -94,7 +102,8 @@ async def upload_file(
         col_count=result["col_count"],
         size_kb=result["size_kb"] or 0,
     )
-    _session_store[sid]["upload_id"] = upload_id
+
+    _store_session(sid, df, result["filename"], result["extension"], fhash, upload_id)
 
     return {
         "session_id": sid,
@@ -128,14 +137,6 @@ async def select_sheet(
     fhash = file_hash(raw)
 
     sid = session_id or new_session_id()
-    _session_store[sid] = {
-        "df":        df,
-        "filename":  result["filename"],
-        "extension": result["extension"],
-        "file_hash": fhash,
-        "upload_id": None,
-        "created_at": utc_now_iso(),
-    }
 
     upload_id = sb.save_upload_metadata(
         session_id=sid,
@@ -146,7 +147,8 @@ async def select_sheet(
         col_count=result["col_count"],
         size_kb=0,
     )
-    _session_store[sid]["upload_id"] = upload_id
+
+    _store_session(sid, df, result["filename"], result["extension"], fhash, upload_id)
 
     return {
         "session_id": sid,
@@ -172,15 +174,32 @@ def list_sessions():
 # Internal helper used by all other routers
 # ---------------------------------------------------------------------------
 
-def get_session_df(session_id: str):
-    """Return the in-memory session dict, or raise ValueError if not found.
+def get_session_df(session_id: str) -> dict:
+    """Return the session dict (including raw DataFrame).
 
-    Sessions live for the life of the server process. If the server restarted,
-    the user needs to re-upload their file — raw files are not stored.
+    Checks in-memory L1 cache first; falls back to Supabase Storage + uploads
+    table so sessions survive server restarts and cold serverless starts.
     """
     session = _session_store.get(session_id)
-    if session is None:
+    if session is not None:
+        return session
+
+    # L2: Supabase Storage
+    meta = sb.get_session_metadata(session_id)
+    df = sb.download_dataframe(session_id, "raw")
+
+    if meta is None or df is None:
         raise ValueError(
-            f"Session '{session_id}' has expired. Please re-upload your file to continue."
+            f"Session '{session_id}' not found. Please re-upload your file to continue."
         )
+
+    session = {
+        "df":        df,
+        "filename":  meta["filename"],
+        "extension": meta["extension"],
+        "file_hash": meta["file_hash"],
+        "upload_id": meta["id"],
+        "created_at": meta["created_at"],
+    }
+    _session_store[session_id] = session  # warm the L1 cache
     return session

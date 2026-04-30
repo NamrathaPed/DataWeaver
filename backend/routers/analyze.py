@@ -17,7 +17,7 @@ from routers.upload import get_session_df
 
 router = APIRouter()
 
-# Cache EDA results in memory per session to avoid re-computation
+# In-memory L1 caches — populated on first access, survive only for process lifetime
 _eda_cache: dict[str, dict] = {}
 _cleaned_cache: dict[str, object] = {}  # session_id -> cleaned DataFrame
 
@@ -29,29 +29,12 @@ def analyze(
     drop_high_null_cols: bool = True,
     null_col_threshold: float = 0.9,
 ):
-    """Clean the uploaded DataFrame and run full EDA.
-
-    Parameters
-    ----------
-    session_id:
-        Session ID returned by the upload endpoint.
-    numeric_fill_strategy:
-        How to fill missing numeric values: median | mean | zero | none.
-    drop_high_null_cols:
-        Drop columns where null fraction exceeds threshold.
-    null_col_threshold:
-        Null fraction threshold for dropping columns (0.0 - 1.0).
-
-    Returns
-    -------
-    Cleaning report + full EDA result dict.
-    """
+    """Clean the uploaded DataFrame and run full EDA."""
     validate_cleaning_strategy(numeric_fill_strategy)
 
     session = get_session_df(session_id)
     df_raw = session["df"]
 
-    # Clean
     df_clean, cleaning_report = clean(
         df_raw,
         numeric_fill_strategy=numeric_fill_strategy,
@@ -59,14 +42,15 @@ def analyze(
         null_col_threshold=null_col_threshold,
     )
 
-    # EDA
     eda_result = run_eda(df_clean)
 
-    # Cache in memory
+    # L1 cache
     _cleaned_cache[session_id] = df_clean
     _eda_cache[session_id] = eda_result
 
-    # upload_id persisted via save_upload_metadata in the upload router
+    # L2 persistence — cleaned DataFrame to Storage, EDA to session_state
+    sb.upload_dataframe(session_id, df_clean, "cleaned")
+    sb.save_session_state(session_id, eda_result=eda_result)
 
     return {
         "session_id": session_id,
@@ -105,13 +89,19 @@ def get_column_types(session_id: str):
 # ---------------------------------------------------------------------------
 
 def get_cleaned_df(session_id: str):
-    """Return the cached cleaned DataFrame for a session."""
+    """Return the cleaned DataFrame. Checks L1 memory, then Supabase Storage."""
     df = _cleaned_cache.get(session_id)
+    if df is not None:
+        return df
+
+    df = sb.download_dataframe(session_id, "cleaned")
     if df is None:
         raise ValueError(
             f"No cleaned data found for session '{session_id}'. "
             "Call POST /api/analyze first."
         )
+
+    _cleaned_cache[session_id] = df
     return df
 
 
@@ -122,9 +112,16 @@ def get_cached_eda(session_id: str) -> dict:
 
 def _get_cached_eda(session_id: str) -> dict:
     eda = _eda_cache.get(session_id)
-    if eda is None:
-        raise ValueError(
-            f"No EDA found for session '{session_id}'. "
-            "Call POST /api/analyze first."
-        )
-    return eda
+    if eda is not None:
+        return eda
+
+    state = sb.get_session_state(session_id)
+    if state and state.get("eda_result"):
+        eda = state["eda_result"]
+        _eda_cache[session_id] = eda
+        return eda
+
+    raise ValueError(
+        f"No EDA found for session '{session_id}'. "
+        "Call POST /api/analyze first."
+    )

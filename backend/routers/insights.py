@@ -31,37 +31,29 @@ def generate(
     model: str = "",
     force_refresh: bool = False,
 ):
-    """Run the full LLM insight pipeline for a session.
-
-    Insights are cached. Set force_refresh=true to re-run the LLM.
-
-    Returns all insight sections plus token usage metadata.
-    """
-    if not force_refresh and session_id in _insight_cache:
-        return {
-            "session_id": session_id,
-            "insights": _insight_cache[session_id],
-            "cached": True,
-        }
+    """Run the full LLM insight pipeline for a session. Cached after first run."""
+    if not force_refresh:
+        # L1: memory
+        if session_id in _insight_cache:
+            return {"session_id": session_id, "insights": _insight_cache[session_id], "cached": True}
+        # L2: Supabase
+        state = sb.get_session_state(session_id)
+        if state and state.get("insight_cache"):
+            _insight_cache[session_id] = state["insight_cache"]
+            return {"session_id": session_id, "insights": state["insight_cache"], "cached": True}
 
     eda = get_cached_eda(session_id)
     session = get_session_df(session_id)
     filename = session["filename"]
 
-    insights = generate_insights(
-        eda,
-        filename,
-        model=model or None,
-    )
+    insights = generate_insights(eda, filename, model=model or None)
 
-    # Validate correlation claims against actual computed r values
     if insights.get("correlations"):
         insights["correlations"] = validate_correlation_claims(
             insights["correlations"],
             eda["correlations"]["strong_pairs"],
         )
 
-    # Pin actual null percentages to anomaly insights
     if insights.get("anomalies"):
         insights["anomalies"] = validate_null_claims(
             insights["anomalies"],
@@ -69,17 +61,9 @@ def generate(
         )
 
     _insight_cache[session_id] = insights
+    sb.save_session_state(session_id, insight_cache=insights)
 
-    # Update Supabase results cache
-    upload_id = session.get("upload_id")
-    if upload_id:
-        sb.save_results(upload_id, eda, insights)
-
-    return {
-        "session_id": session_id,
-        "insights": insights,
-        "cached": False,
-    }
+    return {"session_id": session_id, "insights": insights, "cached": False}
 
 
 @router.post("/section")
@@ -88,14 +72,7 @@ def regenerate_section(
     section: str,
     model: str = "",
 ):
-    """Regenerate a single insight section without re-running the full pipeline.
-
-    Parameters
-    ----------
-    section:
-        One of: overview | statistics | correlations | distributions |
-                categorical | time_series | anomalies
-    """
+    """Regenerate a single insight section without re-running the full pipeline."""
     from prompts.insight_prompts import (
         build_overview_prompt,
         build_statistics_prompt,
@@ -135,9 +112,10 @@ def regenerate_section(
     prompt, key = section_map[section]
     result = generate_single_insight(prompt, key, model=model or None)
 
-    # Update cache
-    if session_id in _insight_cache:
-        _insight_cache[session_id][section] = result
+    # Update both L1 and L2 caches
+    cached = _insight_cache.setdefault(session_id, {})
+    cached[section] = result
+    sb.save_session_state(session_id, insight_cache=cached)
 
     return {"session_id": session_id, "section": section, "insights": result}
 
@@ -145,10 +123,16 @@ def regenerate_section(
 @router.get("")
 def get_insights(session_id: str):
     """Return cached insights for a session."""
+    # L1
     cached = _insight_cache.get(session_id)
-    if cached is None:
-        raise ValueError(
-            f"No insights found for session '{session_id}'. "
-            "Call POST /api/insights/generate first."
-        )
-    return {"session_id": session_id, "insights": cached}
+    if cached is not None:
+        return {"session_id": session_id, "insights": cached}
+    # L2
+    state = sb.get_session_state(session_id)
+    if state and state.get("insight_cache"):
+        _insight_cache[session_id] = state["insight_cache"]
+        return {"session_id": session_id, "insights": state["insight_cache"]}
+    raise ValueError(
+        f"No insights found for session '{session_id}'. "
+        "Call POST /api/insights/generate first."
+    )

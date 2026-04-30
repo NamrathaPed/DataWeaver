@@ -21,12 +21,13 @@ from pydantic import BaseModel
 
 from engine.chart_engine import generate_single_chart
 from routers.analyze import get_cleaned_df, get_cached_eda
+from utils import supabase_client as sb
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# In-memory chat history per session (role, text pairs for display)
+# L1 memory cache for chat history — backed by Supabase chat_messages table
 _chat_history: dict[str, list[dict]] = {}
 
 
@@ -45,6 +46,27 @@ class ChatResponse(BaseModel):
     chart_config: Optional[Dict] = None
     data_table: Optional[List[Dict]] = None
     suggested_questions: List[str] = []
+
+
+# ---------------------------------------------------------------------------
+# History helpers (L1 memory + L2 Supabase)
+# ---------------------------------------------------------------------------
+
+def _load_history(session_id: str) -> list[dict]:
+    """Return chat history from L1 cache or Supabase."""
+    if session_id in _chat_history:
+        return _chat_history[session_id]
+    rows = sb.get_chat_messages(session_id)
+    history = [{"role": r["role"], "content": r["content"]} for r in rows]
+    _chat_history[session_id] = history
+    return history
+
+
+def _append_message(session_id: str, role: str, content: str) -> None:
+    """Append a message to L1 cache and persist to Supabase."""
+    history = _chat_history.setdefault(session_id, [])
+    history.append({"role": role, "content": content})
+    sb.save_chat_message(session_id, role, content)
 
 
 # ---------------------------------------------------------------------------
@@ -133,13 +155,13 @@ def chat_message(req: ChatMessage):
     session = get_session_df(req.session_id)
     filename = session.get("filename", "dataset")
 
-    history = _chat_history.setdefault(req.session_id, [])
+    history = _load_history(req.session_id)
 
     api_key = os.getenv("NVIDIA_API_KEY")
     if not api_key:
         reply, chart_config = _rule_based_response(req.message, eda)
-        history.append({"role": "user", "content": req.message})
-        history.append({"role": "assistant", "content": reply})
+        _append_message(req.session_id, "user", req.message)
+        _append_message(req.session_id, "assistant", reply)
         chart = _build_chart(df, chart_config, eda) if chart_config else None
         return ChatResponse(
             reply=reply,
@@ -174,8 +196,8 @@ def chat_message(req: ChatMessage):
         except Exception as exc:
             logger.warning("Chart generation failed: %s", exc)
 
-    history.append({"role": "user", "content": req.message})
-    history.append({"role": "assistant", "content": clean_reply})
+    _append_message(req.session_id, "user", req.message)
+    _append_message(req.session_id, "assistant", clean_reply)
 
     return ChatResponse(
         reply=clean_reply,
@@ -187,7 +209,7 @@ def chat_message(req: ChatMessage):
 
 @router.get("/history")
 def get_history(session_id: str):
-    history = _chat_history.get(session_id, [])
+    history = _load_history(session_id)
     return {
         "session_id": session_id,
         "history": [m for m in history if m["role"] in ("user", "assistant")],
@@ -197,6 +219,7 @@ def get_history(session_id: str):
 @router.post("/clear")
 def clear_history(session_id: str):
     _chat_history.pop(session_id, None)
+    sb.clear_chat_messages(session_id)
     return {"session_id": session_id, "cleared": True}
 
 

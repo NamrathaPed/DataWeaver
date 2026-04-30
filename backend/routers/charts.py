@@ -11,11 +11,12 @@ from fastapi import APIRouter
 
 from engine.chart_engine import generate_all_charts, generate_single_chart
 from utils.validators import validate_chart_type, validate_column_exists
+from utils import supabase_client as sb
 from routers.analyze import get_cleaned_df, get_cached_eda
 
 router = APIRouter()
 
-# Chart cache — charts are expensive to regenerate on every request
+# L1 memory cache
 _chart_cache: dict[str, dict] = {}
 
 
@@ -29,13 +30,17 @@ def all_charts(
 ):
     """Generate and return all charts for the session's dataset.
 
-    Charts are cached after the first generation. Use force_refresh=true
-    to regenerate (e.g. after applying filters).
-
-    Returns Plotly figure dicts for every chart type.
+    Charts are cached (memory → Supabase). Use force_refresh=true after filters.
     """
-    if not force_refresh and session_id in _chart_cache:
-        return {"session_id": session_id, "charts": _chart_cache[session_id], "cached": True}
+    if not force_refresh:
+        # L1: memory
+        if session_id in _chart_cache:
+            return {"session_id": session_id, "charts": _chart_cache[session_id], "cached": True}
+        # L2: Supabase
+        state = sb.get_session_state(session_id)
+        if state and state.get("chart_cache"):
+            _chart_cache[session_id] = state["chart_cache"]
+            return {"session_id": session_id, "charts": state["chart_cache"], "cached": True}
 
     df = get_cleaned_df(session_id)
     eda = get_cached_eda(session_id)
@@ -49,6 +54,8 @@ def all_charts(
     )
 
     _chart_cache[session_id] = charts
+    sb.save_session_state(session_id, chart_cache=charts)
+
     return {"session_id": session_id, "charts": charts, "cached": False}
 
 
@@ -62,19 +69,7 @@ def single_chart(
     numeric_col: str = "",
     cat_col: str = "",
 ):
-    """Generate a single chart by type.
-
-    Parameters
-    ----------
-    chart_type:
-        One of: histogram | bar | line | scatter | box | heatmap
-    col:
-        Column name (for histogram, bar, line).
-    col_a / col_b:
-        Column names for scatter plot.
-    numeric_col / cat_col:
-        Column names for box plot.
-    """
+    """Generate a single chart by type."""
     validate_chart_type(chart_type)
 
     df = get_cleaned_df(session_id)
@@ -92,9 +87,7 @@ def single_chart(
         validate_column_exists(col_b, all_cols)
         kwargs["col_a"] = col_a
         kwargs["col_b"] = col_b
-        # Attach r value from EDA if available
-        pairs = eda["correlations"].get("strong_pairs", [])
-        for p in pairs:
+        for p in eda["correlations"].get("strong_pairs", []):
             if {p["col_a"], p["col_b"]} == {col_a, col_b}:
                 kwargs["r"] = p["r"]
                 break
