@@ -18,6 +18,9 @@ openai>=1.12.0
 # Supabase
 supabase>=2.3.0
 
+# Vercel serverless ASGI adapter
+mangum>=0.17.0
+
 # Utilities
 python-dotenv>=1.0.0
 scipy>=1.11.0            # Statistical checks

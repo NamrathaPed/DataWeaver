@@ -42,6 +42,7 @@ All methods are no-ops when SUPABASE_URL / SUPABASE_KEY are not set.
 
 from __future__ import annotations
 
+import gzip
 import io
 import json
 import logging
@@ -105,44 +106,61 @@ def _to_json_safe(obj) -> object:
 
 
 # ---------------------------------------------------------------------------
-# DataFrame storage (Supabase Storage — Parquet format)
+# DataFrame storage (Supabase Storage — gzipped CSV + dtype sidecar)
 # ---------------------------------------------------------------------------
 
-def _df_to_parquet_bytes(df: pd.DataFrame) -> bytes:
+def _df_to_csv_bytes(df: pd.DataFrame) -> bytes:
     buf = io.BytesIO()
-    df.to_parquet(buf, index=False)
-    return buf.getvalue()
+    df.to_csv(buf, index=False)
+    return gzip.compress(buf.getvalue())
 
 
-def _parquet_bytes_to_df(data: bytes) -> pd.DataFrame:
-    return pd.read_parquet(io.BytesIO(data))
+def _csv_bytes_to_df(data: bytes, dtypes: dict | None = None) -> pd.DataFrame:
+    df = pd.read_csv(io.BytesIO(gzip.decompress(data)))
+    if dtypes:
+        for col, dtype in dtypes.items():
+            if col not in df.columns:
+                continue
+            try:
+                if "datetime" in dtype:
+                    df[col] = pd.to_datetime(df[col])
+                elif dtype in ("bool", "boolean"):
+                    df[col] = df[col].astype(bool)
+                else:
+                    df[col] = df[col].astype(dtype)
+            except Exception:
+                pass
+    return df
+
+
+def _storage_upload(storage, path: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+    """Upload or overwrite a file in Supabase Storage."""
+    try:
+        storage.upload(path, data, {"content-type": content_type, "upsert": "true"})
+    except Exception:
+        try:
+            storage.remove([path])
+        except Exception:
+            pass
+        storage.upload(path, data, {"content-type": content_type})
 
 
 def upload_dataframe(session_id: str, df: pd.DataFrame, key: str) -> bool:
-    """Save a DataFrame to Supabase Storage as Parquet.
+    """Save a DataFrame to Supabase Storage as gzipped CSV.
 
-    key is "raw" or "cleaned".
+    key is "raw" or "cleaned". Stores a dtype sidecar JSON alongside
+    so datetime/bool columns are reconstructed correctly on load.
     """
     client = _get_client()
     if client is None:
         return False
     try:
-        path = f"{session_id}/{key}.parquet"
-        data = _df_to_parquet_bytes(df)
         storage = client.storage.from_(STORAGE_BUCKET)
-        # Try upload; if file exists, remove then re-upload
-        try:
-            storage.upload(
-                path,
-                data,
-                {"content-type": "application/octet-stream", "upsert": "true"},
-            )
-        except Exception:
-            try:
-                storage.remove([path])
-            except Exception:
-                pass
-            storage.upload(path, data, {"content-type": "application/octet-stream"})
+        csv_bytes = _df_to_csv_bytes(df)
+        dtypes = {col: str(dtype) for col, dtype in df.dtypes.items()}
+        dtypes_bytes = json.dumps(dtypes).encode()
+        _storage_upload(storage, f"{session_id}/{key}.csv.gz", csv_bytes)
+        _storage_upload(storage, f"{session_id}/{key}_dtypes.json", dtypes_bytes, "application/json")
         return True
     except Exception as exc:
         logger.error("Failed to upload dataframe (%s/%s): %s", session_id, key, exc)
@@ -155,9 +173,14 @@ def download_dataframe(session_id: str, key: str) -> pd.DataFrame | None:
     if client is None:
         return None
     try:
-        path = f"{session_id}/{key}.parquet"
-        data = client.storage.from_(STORAGE_BUCKET).download(path)
-        return _parquet_bytes_to_df(data)
+        storage = client.storage.from_(STORAGE_BUCKET)
+        csv_bytes = storage.download(f"{session_id}/{key}.csv.gz")
+        try:
+            dtypes_bytes = storage.download(f"{session_id}/{key}_dtypes.json")
+            dtypes = json.loads(dtypes_bytes)
+        except Exception:
+            dtypes = None
+        return _csv_bytes_to_df(csv_bytes, dtypes)
     except Exception as exc:
         logger.warning("Failed to download dataframe (%s/%s): %s", session_id, key, exc)
         return None
