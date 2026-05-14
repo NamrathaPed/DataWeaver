@@ -19,8 +19,9 @@ export default {
         },
       },
       fontFamily: {
-        sans: ["Inter", "ui-sans-serif", "system-ui"],
-        mono: ["JetBrains Mono", "ui-monospace"],
+        sans:    ["Inter", "ui-sans-serif", "system-ui"],
+        mono:    ["JetBrains Mono", "ui-monospace"],
+        display: ["Syne", "ui-sans-serif"],
       },
       keyframes: {
         fadeSlideUp: {
